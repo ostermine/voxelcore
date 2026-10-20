@@ -114,6 +114,7 @@ void ModelViewer::draw(const DrawContext& pctx, const Assets& assets) {
     if (model == nullptr) {
         return;
     }
+    pctx.getBatch2D()->flush();
     auto& prevShader = Shader::getUsed();
 
     if (!fbo) {
