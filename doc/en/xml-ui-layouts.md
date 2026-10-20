@@ -176,6 +176,15 @@ Container for embedding an external document. Content is scaled to the iframe si
 
 - `src` - document id in the format `pack:name` (`pack/layouts/name.xml`)
 
+## Model viewer - *modelviewer*
+
+Container displaying a 3D model. Mouse wheel over the element changes the camera distance, moving with the middle button held rotates the camera (with Shift - moves the center).
+
+- `src` - model name. Example: `drop-block`
+- `center` - point the camera is directed at. Type: 3D vector. Default: `0,0,0`
+- `cam-rotation` - camera rotation in degrees (yaw, pitch, roll). Type: 3D vector. Default: `0,0,0`
+- `distance` - camera distance from the center. Type: number. Default: 4
+
 ## *select*
 
 Drop-down list. Options are described by `option` sub-elements, the `value` attribute of which contains the value, the inner text is the text displayed in the UI.

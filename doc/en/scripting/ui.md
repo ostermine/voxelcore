@@ -220,6 +220,15 @@ Currently, only png is supported.
 |----------|--------|------|-------|-----------------------------|
 | src      | string | yes  | yes   | id of the embedded document |
 
+## Model viewer (modelviewer)
+
+| Name        | Type   | Read | Write | Description                           |
+|-------------|--------|------|-------|---------------------------------------|
+| src         | string | yes  | yes   | model name                            |
+| center      | vec3   | yes  | yes   | point the camera is directed at       |
+| camRotation | vec3   | yes  | yes   | camera rotation in degrees            |
+| distance    | number | yes  | yes   | camera distance from the center       |
+
 ## Select
 
 Derived from button with access to properties such as the text to display.
