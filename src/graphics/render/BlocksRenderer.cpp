@@ -380,6 +380,8 @@ void BlocksRenderer::blockCustomModel(
                                 aoColor,
                                 pickLight(glm::floor(p + n + 0.5f) + 0.5f)
                             );
+                        } else {
+                            aoColor = glm::max(aoColor, pickLight(icoord));
                         }
                     }
                 }
