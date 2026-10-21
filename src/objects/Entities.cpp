@@ -305,6 +305,7 @@ void Entities::preparePhysics(float delta) {
     sensors.clear();
 
     if (int parts = sensorsTickClock.update(delta)) {
+        parts = std::min(parts, sensorsTickClock.getParts());
         for (int i = 0; i < parts; i++) {
             auto part = sensorsTickClock.convertPart(i);
             auto allParts = sensorsTickClock.getParts();
