@@ -406,6 +406,27 @@ static int p_get_src(UINode* node, lua::State* L) {
     return 0;
 }
 
+static int p_get_center(UINode* node, lua::State* L) {
+    if (auto modelviewer = dynamic_cast<ModelViewer*>(node)) {
+        return lua::pushvec3(L, modelviewer->getCenter());
+    }
+    return 0;
+}
+
+static int p_get_cam_rotation(UINode* node, lua::State* L) {
+    if (auto modelviewer = dynamic_cast<ModelViewer*>(node)) {
+        return lua::pushvec3(L, glm::degrees(modelviewer->getRotation()));
+    }
+    return 0;
+}
+
+static int p_get_distance(UINode* node, lua::State* L) {
+    if (auto modelviewer = dynamic_cast<ModelViewer*>(node)) {
+        return lua::pushnumber(L, modelviewer->getDistance());
+    }
+    return 0;
+}
+
 static int p_get_fallback(UINode* node, lua::State* L) {
     if (auto image = dynamic_cast<Image*>(node)) {
         return lua::pushstring(L, image->getFallback());
@@ -682,6 +703,9 @@ static int l_gui_getattr(lua::State* L) {
             {"syntax", p_get_syntax},
             {"markup", p_get_markup},
             {"src", p_get_src},
+            {"center", p_get_center},
+            {"camRotation", p_get_cam_rotation},
+            {"distance", p_get_distance},
             {"fallback", p_get_fallback},
             {"value", p_get_value},
             {"min", p_get_min},
@@ -809,6 +833,21 @@ static void p_set_src(UINode* node, lua::State* L, int idx) {
         iframe->setSrc(lua::require_string(L, idx));
     } else if (auto modelviewer = dynamic_cast<ModelViewer*>(node)) {
         modelviewer->setModel(lua::require_string(L, idx));
+    }
+}
+static void p_set_center(UINode* node, lua::State* L, int idx) {
+    if (auto modelviewer = dynamic_cast<ModelViewer*>(node)) {
+        modelviewer->setCenter(lua::tovec3(L, idx));
+    }
+}
+static void p_set_cam_rotation(UINode* node, lua::State* L, int idx) {
+    if (auto modelviewer = dynamic_cast<ModelViewer*>(node)) {
+        modelviewer->setRotation(glm::radians(lua::tovec3(L, idx)));
+    }
+}
+static void p_set_distance(UINode* node, lua::State* L, int idx) {
+    if (auto modelviewer = dynamic_cast<ModelViewer*>(node)) {
+        modelviewer->setDistance(lua::tonumber(L, idx));
     }
 }
 static void p_set_fallback(UINode* node, lua::State* L, int idx) {
@@ -988,6 +1027,9 @@ static int l_gui_setattr(lua::State* L) {
             {"syntax", p_set_syntax},
             {"markup", p_set_markup},
             {"src", p_set_src},
+            {"center", p_set_center},
+            {"camRotation", p_set_cam_rotation},
+            {"distance", p_set_distance},
             {"fallback", p_set_fallback},
             {"caret", p_set_caret},
             {"value", p_set_value},
