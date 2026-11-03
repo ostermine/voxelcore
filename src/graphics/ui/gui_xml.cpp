@@ -392,6 +392,9 @@ static std::shared_ptr<UINode> read_model_viewer(
         viewer->setRotation(glm::radians(element.attr("cam-rotation").asVec3())
         );
     }
+    if (element.has("distance")) {
+        viewer->setDistance(element.attr("distance").asFloat());
+    }
     return viewer;
 }
 
