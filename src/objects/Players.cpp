@@ -32,7 +32,8 @@ std::vector<Player*> Players::getAllInRadius(
     for (const auto& pair : players) {
         auto player = pair.second.get();
         auto relativePos = player->getPosition() - center;
-        if (!player->isSuspended() && glm::length2(relativePos) <= radius) {
+        if (!player->isSuspended() &&
+            glm::length2(relativePos) <= radius * radius) {
             foundPlayers.emplace_back(player);
         }
     }
