@@ -1,7 +1,12 @@
 #include "api_lua.hpp"
+
+#include <algorithm>
+
 #include "devtools/Project.hpp"
 #include "engine/Engine.hpp"
+#include "logic/scripting/scripting.hpp"
 #include "network/netgame/NetGame.hpp"
+#include "network/netgame/Replication.hpp"
 
 using namespace scripting;
 
@@ -96,6 +101,22 @@ static int l_close(lua::State* L) {
 
 static int l_poll(lua::State* L) {
     auto events = netgame::poll();
+    // replication messages are handled here and do not reach scripts
+    if (level) {
+        events.erase(
+            std::remove_if(
+                events.begin(),
+                events.end(),
+                [](const netgame::Event& event) {
+                    if (event.type == netgame::EventType::DISCONNECTED) {
+                        netgame::replication::unbind(event.connection);
+                    }
+                    return netgame::replication::consume(event, *level);
+                }
+            ),
+            events.end()
+        );
+    }
     lua::createtable(L, events.size(), 0);
     for (size_t i = 0; i < events.size(); i++) {
         const auto& event = events[i];
@@ -173,7 +194,112 @@ static int l_set_send_rate(lua::State* L) {
 }
 
 static int l_shutdown(lua::State* L) {
+    netgame::replication::reset();
     netgame::shutdown();
+    return 0;
+}
+
+static Level& require_level() {
+    if (level == nullptr) {
+        throw std::runtime_error("level is not initialized");
+    }
+    return *level;
+}
+
+static int l_replicate_player(lua::State* L) {
+    netgame::replication::bind_player(lua::tointeger(L, 1), lua::tointeger(L, 2));
+    return 0;
+}
+
+static int l_replicate_local(lua::State* L) {
+    netgame::replication::bind_local(lua::tointeger(L, 1), lua::tointeger(L, 2));
+    return 0;
+}
+
+static int l_unreplicate(lua::State* L) {
+    netgame::replication::unbind(lua::tointeger(L, 1));
+    return 0;
+}
+
+static int l_add_remote(lua::State* L) {
+    netgame::replication::add_remote(lua::tointeger(L, 1), lua::tointeger(L, 2));
+    return 0;
+}
+
+static int l_remove_remote(lua::State* L) {
+    netgame::replication::remove_remote(lua::tointeger(L, 1));
+    return 0;
+}
+
+static int l_replication_tick(lua::State* L) {
+    netgame::replication::tick(require_level());
+    return 0;
+}
+
+static int l_replication_frame(lua::State* L) {
+    netgame::replication::frame(require_level());
+    return 0;
+}
+
+static int l_replication_stats(lua::State* L) {
+    auto stats = netgame::replication::take_stats();
+    lua::createtable(L, 0, 8);
+    lua::pushinteger(L, stats.ticks);
+    lua::setfield(L, "ticks");
+    lua::pushnumber(L, stats.ticks ? stats.tickUsecTotal / 1000.0 / stats.ticks : 0.0);
+    lua::setfield(L, "tick_avg_ms");
+    lua::pushnumber(L, stats.tickUsecMax / 1000.0);
+    lua::setfield(L, "tick_max_ms");
+    lua::pushinteger(L, stats.movesApplied);
+    lua::setfield(L, "moves");
+    lua::pushinteger(L, stats.records);
+    lua::setfield(L, "records");
+    lua::pushinteger(L, stats.messages);
+    lua::setfield(L, "messages");
+    lua::pushinteger(L, stats.bytes);
+    lua::setfield(L, "bytes");
+    lua::pushinteger(L, stats.snapshotsReceived);
+    lua::setfield(L, "snapshots");
+    return 1;
+}
+
+static int l_configure_replication(lua::State* L) {
+    auto config = netgame::replication::get_config();
+    if (lua::istable(L, 1)) {
+        if (lua::getfield(L, "lane", 1)) {
+            config.lane = lua::tointeger(L, -1);
+            lua::pop(L);
+        }
+        if (lua::getfield(L, "tick_rate", 1)) {
+            config.tickRate = lua::tointeger(L, -1);
+            lua::pop(L);
+        }
+        if (lua::getfield(L, "delay", 1)) {
+            config.interpolationDelay = lua::tonumber(L, -1);
+            lua::pop(L);
+        }
+        if (lua::getfield(L, "max_extrapolation", 1)) {
+            config.maxExtrapolation = lua::tonumber(L, -1);
+            lua::pop(L);
+        }
+        if (lua::getfield(L, "tiers", 1)) {
+            config.tiers.clear();
+            int count = lua::objlen(L, -1);
+            for (int i = 1; i <= count; i++) {
+                lua::rawgeti(L, i);
+                lua::rawgeti(L, 1);
+                float distance = lua::tonumber(L, -1);
+                lua::pop(L);
+                lua::rawgeti(L, 2);
+                int period = lua::tointeger(L, -1);
+                lua::pop(L);
+                lua::pop(L);
+                config.tiers.push_back({distance, period});
+            }
+            lua::pop(L);
+        }
+    }
+    netgame::replication::configure(config);
     return 0;
 }
 
@@ -190,5 +316,14 @@ const luaL_Reg netgamelib[] = {
     {"set_fake_network", lua::wrap<l_set_fake_network>},
     {"set_send_rate", lua::wrap<l_set_send_rate>},
     {"shutdown", lua::wrap<l_shutdown>},
+    {"replicate_player", lua::wrap<l_replicate_player>},
+    {"replicate_local", lua::wrap<l_replicate_local>},
+    {"unreplicate", lua::wrap<l_unreplicate>},
+    {"add_remote", lua::wrap<l_add_remote>},
+    {"remove_remote", lua::wrap<l_remove_remote>},
+    {"replication_tick", lua::wrap<l_replication_tick>},
+    {"replication_frame", lua::wrap<l_replication_frame>},
+    {"replication_stats", lua::wrap<l_replication_stats>},
+    {"configure_replication", lua::wrap<l_configure_replication>},
     {nullptr, nullptr}
 };
