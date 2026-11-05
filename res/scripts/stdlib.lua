@@ -410,7 +410,9 @@ require("core:io_stream").wrap_bytearray = require "core:internal/stream_provide
 
 network.__as_stream = require "core:internal/stream_providers/socket"
 
-math.randomseed(time.uptime() * 1536227939)
+-- the wall clock: the uptime here is the same on every launch, so were
+-- math.random() and the seed a new world gets from the menu
+math.randomseed(time.precise_utc_time())
 
 rules = require "core:internal/rules"
 time.schedules = {}
