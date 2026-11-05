@@ -191,6 +191,21 @@ namespace {
         return a + delta * t;
     }
 
+    /// A server catching up after a pause runs ticks a millisecond apart,
+    /// and a movement between them would give a speed of hundreds of blocks
+    /// per second: the velocity is taken over at least this many seconds
+    constexpr double MIN_SPAN = 0.04;
+
+    glm::vec3 velocity_to(const std::deque<Sample>& samples, size_t hi) {
+        size_t lo = hi - 1;
+        while (lo > 0 && samples[hi].time - samples[lo].time < MIN_SPAN) {
+            lo--;
+        }
+        double span = std::max(samples[hi].time - samples[lo].time, MIN_SPAN);
+        return (samples[hi].position - samples[lo].position) /
+               static_cast<float>(span);
+    }
+
     void apply_move(Level& level, int64_t pid, const std::vector<uint8_t>& data) {
         Reader reader {data};
         reader.u8();
@@ -448,10 +463,8 @@ Pose detail::sample_at(
     if (time >= samples.back().time) {
         Pose pose = pose_of(samples.back());
         if (samples.size() >= 2) {
-            const auto& a = samples[samples.size() - 2];
             const auto& b = samples.back();
-            glm::vec3 velocity =
-                (b.position - a.position) / static_cast<float>(b.time - a.time);
+            glm::vec3 velocity = velocity_to(samples, samples.size() - 1);
             double ahead = time - b.time;
             if (ahead < maxExtrapolation) {
                 pose.velocity = velocity;
@@ -472,7 +485,7 @@ Pose detail::sample_at(
     float k = static_cast<float>((time - a.time) / span);
     Pose pose = pose_of(b);
     pose.position = glm::mix(a.position, b.position, k);
-    pose.velocity = (b.position - a.position) / static_cast<float>(span);
+    pose.velocity = velocity_to(samples, i);
     pose.yaw = lerp_angle(a.yaw, b.yaw, k);
     pose.pitch = a.pitch + (b.pitch - a.pitch) * k;
     return pose;

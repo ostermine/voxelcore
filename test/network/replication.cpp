@@ -98,6 +98,27 @@ TEST(netgame_replication, extrapolates_then_stops) {
     EXPECT_EQ(pose.velocity, glm::vec3(0.0f));
 }
 
+TEST(netgame_replication, samples_a_moment_apart) {
+    // a server catching up after a pause: the last two ticks 2 ms apart
+    std::deque<Sample> samples {
+        Sample {1.0, {0, 0, 0}, 0.0f, 0.0f, 0},
+        Sample {1.05, {0.25f, 0, 0}, 0.0f, 0.0f, 0},
+        Sample {1.052, {0.5f, 0, 0}, 0.0f, 0.0f, 0},
+    };
+    // over 52 ms, not 0.25 blocks in 2 ms (125 blocks per second)
+    auto pose = sample_at(samples, 1.152, 0.25);
+    EXPECT_NEAR(pose.velocity.x, 0.5f / 0.052f, 0.01f);
+    EXPECT_NEAR(pose.position.x, 0.5f + 0.5f / 0.052f * 0.1f, 1e-3f);
+
+    pose = sample_at(samples, 1.051, 0.25);
+    EXPECT_NEAR(pose.velocity.x, 0.5f / 0.052f, 0.01f);
+
+    // too little history: no faster than the distance in MIN_SPAN
+    std::deque<Sample> two {samples[1], samples[2]};
+    pose = sample_at(two, 1.06, 0.25);
+    EXPECT_NEAR(pose.velocity.x, 0.25f / 0.04f, 0.01f);
+}
+
 TEST(netgame_replication, before_first_and_single_sample) {
     auto samples = two_samples();
     auto pose = sample_at(samples, 0.5, 0.25);
