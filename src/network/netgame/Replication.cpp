@@ -282,9 +282,13 @@ namespace {
                 continue;
             }
             remote.anchored = false;
-            remote.jump += remote.anchor - sample_at(
+            glm::vec3 jump = remote.anchor - sample_at(
                 remote.samples, after, config.maxExtrapolation
             ).position;
+            if (glm::length(jump) < config.glideMin) {
+                continue;
+            }
+            remote.jump += jump;
             if (glm::length(remote.jump) > config.snapDistance) {
                 remote.jump = {};
             }

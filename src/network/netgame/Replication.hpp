@@ -48,7 +48,10 @@ namespace netgame::replication {
         /// glides to the new place: the rest of the jump halves every this
         /// many seconds ...
         double smoothing = 0.08;
-        /// ... but a jump longer than this (blocks) is a teleport
+        /// ... if the jump is longer than this (blocks): shorter ones are
+        /// not seen, and gliding them would only keep the player off its path
+        float glideMin = 0.25f;
+        /// ... and a jump longer than this (blocks) is a teleport
         float snapDistance = 8.0f;
     };
 

@@ -282,6 +282,10 @@ static int l_configure_replication(lua::State* L) {
             config.smoothing = lua::tonumber(L, -1);
             lua::pop(L);
         }
+        if (lua::getfield(L, "glide_min", 1)) {
+            config.glideMin = lua::tonumber(L, -1);
+            lua::pop(L);
+        }
         if (lua::getfield(L, "snap_distance", 1)) {
             config.snapDistance = lua::tonumber(L, -1);
             lua::pop(L);
