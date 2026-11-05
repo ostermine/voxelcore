@@ -44,6 +44,9 @@ namespace {
     std::unordered_map<ConnectionId, ServerPeer> peers;
     std::unordered_map<int64_t, Subject> subjects;
     uint32_t serverTick = 0;
+    /// snapshots carry real time, not ticks: a server falling behind its
+    /// tick rate would make remote players jump
+    double serverStart = -1.0;
 
     // client
     struct Sample {
@@ -209,12 +212,12 @@ namespace {
     void read_snapshot(const std::vector<uint8_t>& data) {
         Reader reader {data};
         reader.u8();
-        uint32_t tick = reader.u32();
+        uint32_t timeMs = reader.u32();
         uint16_t count = reader.u16();
         if (!reader.ok) {
             return;
         }
-        double serverTime = static_cast<double>(tick) / config.tickRate;
+        double serverTime = timeMs / 1000.0;
         double offset = serverTime - now_seconds();
         if (!clockSet || std::abs(offset - serverOffset) > 0.5) {
             serverOffset = offset;
@@ -290,6 +293,10 @@ namespace {
 
     void server_tick(Level& level) {
         serverTick++;
+        if (serverStart < 0) {
+            serverStart = now_seconds();
+        }
+        auto timeMs = static_cast<uint32_t>((now_seconds() - serverStart) * 1000.0);
         struct State {
             int64_t pid;
             glm::vec3 position;
@@ -345,7 +352,7 @@ namespace {
                 }
                 if (count == 0) {
                     put_u8(message, T_SNAPSHOT);
-                    put_u32(message, serverTick);
+                    put_u32(message, timeMs);
                     put_u16(message, 0);
                 }
                 message += state.record;
@@ -428,6 +435,7 @@ void replication::unbind(ConnectionId connection) {
 }
 
 void replication::reset() {
+    serverStart = -1.0;
     peers.clear();
     subjects.clear();
     remotes.clear();

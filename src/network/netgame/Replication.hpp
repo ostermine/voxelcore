@@ -16,7 +16,8 @@ class Level;
 ///
 /// Messages on the replication lane (little-endian):
 ///   move, client to server:  u8 1, u32 seq, f32 x, y, z, yaw, pitch, u8 flags
-///   snapshot, server to client: u8 5, u32 tick, u16 count, then count times
+///   snapshot, server to client: u8 5, u32 server time (ms), u16 count, then
+///     count times
 ///     u16 pid, i32 x, y, z (1/256 block), u16 yaw (1/65536 turn),
 ///     i16 pitch (1/300 degree), u8 flags
 /// flags: 1 - crouching.
@@ -30,7 +31,6 @@ namespace netgame::replication {
 
     struct Config {
         int lane = 1;
-        int tickRate = 20;
         std::vector<Tier> tiers {
             {50, 1}, {100, 2}, {std::numeric_limits<float>::max(), 4}
         };

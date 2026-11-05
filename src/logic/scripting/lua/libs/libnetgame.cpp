@@ -270,10 +270,6 @@ static int l_configure_replication(lua::State* L) {
             config.lane = lua::tointeger(L, -1);
             lua::pop(L);
         }
-        if (lua::getfield(L, "tick_rate", 1)) {
-            config.tickRate = lua::tointeger(L, -1);
-            lua::pop(L);
-        }
         if (lua::getfield(L, "delay", 1)) {
             config.interpolationDelay = lua::tonumber(L, -1);
             lua::pop(L);
