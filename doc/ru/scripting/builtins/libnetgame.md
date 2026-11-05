@@ -136,6 +136,9 @@ netgame.configure_replication({
     lane: int,                 -- полоса сообщений репликации (1)
     delay: number,             -- чужие игроки показываются на столько секунд в прошлом (0.1)
     max_extrapolation: number, -- дальше последнего снимка не больше чем на столько секунд (0.25)
+    smoothing: number,         -- скачок от запоздавших снимков (пауза, потери) не телепортом, а скольжением:
+                               -- остаток скачка уменьшается вдвое каждые столько секунд (0.08)
+    snap_distance: number,     -- скачок длиннее стольких блоков — телепорт (8)
     tiers: table,              -- {{дистанция, период}, ...}: ближе дистанции — каждый период-й тик
                                -- (по умолчанию {{50, 1}, {100, 2}, {огромное, 4}})
 })
@@ -163,5 +166,8 @@ netgame.replication_frame()
 netgame.replication_stats() -> table
 ```
 
-Чужих игроков движок ставит телепортом каждый кадр: им нужны `player.set_flight(pid, true)`, `player.set_noclip(pid, true)`
-и `player.set_loading_chunks(pid, false)`. Формат сообщений описан в `src/network/netgame/Replication.hpp`.
+Чужих игроков движок ставит телепортом каждый кадр и выводит их тела из физики (тип тела `static` до следующего шага):
+скорость тела — скорость по снимкам, `is_grounded()` и `is_crouching()` — как у игрока на его клиенте, так что аниматоры
+модели видят ходьбу, как у своего игрока. Выделять их прицелом и лучом можно. До первого снимка им нужны
+`player.set_flight(pid, true)` и `player.set_noclip(pid, true)` (иначе падают), и всегда — `player.set_loading_chunks(pid, false)`.
+Формат сообщений описан в `src/network/netgame/Replication.hpp`.

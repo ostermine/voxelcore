@@ -4,7 +4,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
-#include <deque>
 #include <string>
 #include <unordered_map>
 
@@ -18,11 +17,11 @@
 
 using namespace netgame;
 using namespace netgame::replication;
+using namespace netgame::replication::detail;
 
 namespace {
     constexpr uint8_t T_MOVE = 1;
     constexpr uint8_t T_SNAPSHOT = 5;
-    constexpr uint8_t FLAG_CROUCH = 1;
     /// 7 + 60 * 19 bytes fits one UDP packet
     constexpr int MAX_RECORDS = 60;
     constexpr size_t MAX_SAMPLES = 32;
@@ -40,6 +39,8 @@ namespace {
         uint32_t lastSeq = 0;
         /// grows with every applied movement
         uint32_t version = 0;
+        /// from the client until the server moves players itself
+        uint8_t flags = 0;
     };
     std::unordered_map<ConnectionId, ServerPeer> peers;
     std::unordered_map<int64_t, Subject> subjects;
@@ -49,16 +50,15 @@ namespace {
     double serverStart = -1.0;
 
     // client
-    struct Sample {
-        double time;
-        glm::vec3 position;
-        float yaw;
-        float pitch;
-        uint8_t flags;
-    };
     struct Remote {
         int64_t localPid;
         std::deque<Sample> samples;
+        /// shown minus computed position: what is left of a jump
+        glm::vec3 jump {};
+        bool shown = false;
+        /// the shown position before a snapshot is read
+        bool anchored = false;
+        glm::vec3 anchor {};
     };
     ConnectionId localConnection = 0;
     int64_t localPid = -1;
@@ -67,6 +67,7 @@ namespace {
     bool clockSet = false;
     /// server time minus local time, seconds
     double serverOffset = 0.0;
+    double lastFrame = -1.0;
 
     double now_seconds() {
         using namespace std::chrono;
@@ -131,11 +132,20 @@ namespace {
 
     uint8_t flags_of(Level& level, const Player& player) {
         auto entity = entity_of(level, player);
-        return entity && entity->getRigidbody().hitbox.crouching ? FLAG_CROUCH
-                                                                 : 0;
+        if (entity == nullptr) {
+            return 0;
+        }
+        const auto& hitbox = entity->getRigidbody().hitbox;
+        return (hitbox.crouching ? FLAG_CROUCH : 0) |
+               (hitbox.grounded ? FLAG_GROUNDED : 0);
     }
 
-    void place(
+    void set_rotation(Player& player, float yaw, float pitch) {
+        auto rotation = player.getRotation();
+        player.setRotation({yaw, pitch, rotation.z});
+    }
+
+    void place_moved(
         Level& level,
         Player& player,
         const glm::vec3& position,
@@ -144,12 +154,26 @@ namespace {
         uint8_t flags
     ) {
         player.teleport(position);
-        auto rotation = player.getRotation();
-        player.setRotation({yaw, pitch, rotation.z});
+        set_rotation(player, yaw, pitch);
         if (auto entity = entity_of(level, player)) {
             auto& hitbox = entity->getRigidbody().hitbox;
             hitbox.crouching = flags & FLAG_CROUCH;
             hitbox.velocity = {};
+        }
+    }
+
+    void place_remote(Level& level, Player& player, const Pose& pose) {
+        player.teleport(pose.position);
+        set_rotation(player, pose.yaw, pose.pitch);
+        if (auto entity = entity_of(level, player)) {
+            auto& hitbox = entity->getRigidbody().hitbox;
+            // out of the next physics step, so that the velocity and the
+            // ground stay for the animations (core:player sets the body type
+            // back after the step, this runs later in the frame)
+            hitbox.type = BodyType::STATIC;
+            hitbox.velocity = pose.velocity;
+            hitbox.grounded = pose.flags & FLAG_GROUNDED;
+            hitbox.crouching = pose.flags & FLAG_CROUCH;
         }
     }
 
@@ -162,22 +186,9 @@ namespace {
         return config.tiers.empty() ? 1 : std::max(1, config.tiers.back().period);
     }
 
-    void write_record(std::string& out, int64_t pid, Level& level, const Player& player) {
-        const auto& position = player.getPosition();
-        auto rotation = player.getRotation();
-        float yaw = std::fmod(rotation.x, 360.0f);
-        if (yaw < 0) {
-            yaw += 360.0f;
-        }
-        put_u16(out, static_cast<uint16_t>(pid));
-        put_u32(out, static_cast<uint32_t>(static_cast<int32_t>(std::lround(position.x * 256))));
-        put_u32(out, static_cast<uint32_t>(static_cast<int32_t>(std::lround(position.y * 256))));
-        put_u32(out, static_cast<uint32_t>(static_cast<int32_t>(std::lround(position.z * 256))));
-        put_u16(out, static_cast<uint16_t>(std::lround(yaw / 360.0f * 65536.0f) & 0xFFFF));
-        put_u16(out, static_cast<uint16_t>(static_cast<int16_t>(
-            std::clamp<long>(std::lround(rotation.y * 300), -32767, 32767)
-        )));
-        put_u8(out, flags_of(level, player));
+    float lerp_angle(float a, float b, float t) {
+        float delta = std::fmod(b - a + 540.0f, 360.0f) - 180.0f;
+        return a + delta * t;
     }
 
     void apply_move(Level& level, int64_t pid, const std::vector<uint8_t>& data) {
@@ -205,8 +216,13 @@ namespace {
         }
         subject.lastSeq = seq;
         subject.version++;
-        place(level, *player, position, yaw, pitch, flags);
+        subject.flags = flags;
+        place_moved(level, *player, position, yaw, pitch, flags);
         stats.movesApplied++;
+    }
+
+    double render_time(double now) {
+        return now + serverOffset - config.interpolationDelay;
     }
 
     void read_snapshot(const std::vector<uint8_t>& data) {
@@ -217,28 +233,35 @@ namespace {
         if (!reader.ok) {
             return;
         }
+        double now = now_seconds();
+        // where the remote players are shown, to glide from there if the new
+        // samples or the clock move them
+        if (clockSet) {
+            double before = render_time(now);
+            for (auto& [_, remote] : remotes) {
+                remote.anchored = remote.shown && !remote.samples.empty();
+                if (remote.anchored) {
+                    remote.anchor = sample_at(
+                        remote.samples, before, config.maxExtrapolation
+                    ).position;
+                }
+            }
+        }
         double serverTime = timeMs / 1000.0;
-        double offset = serverTime - now_seconds();
+        double offset = serverTime - now;
         if (!clockSet || std::abs(offset - serverOffset) > 0.5) {
             serverOffset = offset;
             clockSet = true;
         } else {
             serverOffset += (offset - serverOffset) * 0.05;
         }
-        for (int i = 0; i < count; i++) {
-            uint32_t pid = reader.u16();
-            Sample sample;
-            sample.time = serverTime;
-            sample.position.x = static_cast<int32_t>(reader.u32()) / 256.0f;
-            sample.position.y = static_cast<int32_t>(reader.u32()) / 256.0f;
-            sample.position.z = static_cast<int32_t>(reader.u32()) / 256.0f;
-            sample.yaw = reader.u16() * 360.0f / 65536.0f;
-            sample.pitch = static_cast<int16_t>(reader.u16()) / 300.0f;
-            sample.flags = reader.u8();
-            if (!reader.ok) {
-                return;
+        size_t pos = reader.pos;
+        for (int i = 0; i < count; i++, pos += RECORD_SIZE) {
+            Record record;
+            if (!read_record(data, pos, record)) {
+                break;
             }
-            auto found = remotes.find(pid);
+            auto found = remotes.find(record.pid);
             if (found == remotes.end()) {
                 continue;
             }
@@ -246,49 +269,27 @@ namespace {
             if (!samples.empty() && serverTime <= samples.back().time) {
                 continue;
             }
-            samples.push_back(sample);
+            samples.push_back(Sample {
+                serverTime, record.position, record.yaw, record.pitch, record.flags
+            });
             if (samples.size() > MAX_SAMPLES) {
                 samples.pop_front();
             }
         }
-        stats.snapshotsReceived++;
-    }
-
-    float lerp_angle(float a, float b, float t) {
-        float delta = std::fmod(b - a + 540.0f, 360.0f) - 180.0f;
-        return a + delta * t;
-    }
-
-    Sample sample_at(const std::deque<Sample>& samples, double time) {
-        if (time <= samples.front().time) {
-            return samples.front();
-        }
-        if (time >= samples.back().time) {
-            Sample result = samples.back();
-            if (samples.size() >= 2) {
-                const auto& a = samples[samples.size() - 2];
-                const auto& b = samples.back();
-                double span = b.time - a.time;
-                double ahead = std::min(time - b.time, config.maxExtrapolation);
-                if (span > 0) {
-                    float k = static_cast<float>(ahead / span);
-                    result.position = b.position + (b.position - a.position) * k;
-                }
+        double after = render_time(now);
+        for (auto& [_, remote] : remotes) {
+            if (!remote.anchored) {
+                continue;
             }
-            return result;
+            remote.anchored = false;
+            remote.jump += remote.anchor - sample_at(
+                remote.samples, after, config.maxExtrapolation
+            ).position;
+            if (glm::length(remote.jump) > config.snapDistance) {
+                remote.jump = {};
+            }
         }
-        size_t i = 1;
-        while (samples[i].time < time) {
-            i++;
-        }
-        const auto& a = samples[i - 1];
-        const auto& b = samples[i];
-        float k = static_cast<float>((time - a.time) / (b.time - a.time));
-        Sample result = b;
-        result.position = glm::mix(a.position, b.position, k);
-        result.yaw = lerp_angle(a.yaw, b.yaw, k);
-        result.pitch = a.pitch + (b.pitch - a.pitch) * k;
-        return result;
+        stats.snapshotsReceived++;
     }
 
     void server_tick(Level& level) {
@@ -311,8 +312,19 @@ namespace {
                 subject->second.version == 0) {
                 continue;
             }
-            State state {peer.pid, player->getPosition(), subject->second.version, {}};
-            write_record(state.record, peer.pid, level, *player);
+            const auto& position = player->getPosition();
+            auto rotation = player->getRotation();
+            State state {peer.pid, position, subject->second.version, {}};
+            write_record(
+                state.record,
+                Record {
+                    static_cast<uint16_t>(peer.pid),
+                    position,
+                    rotation.x,
+                    rotation.y,
+                    subject->second.flags
+                }
+            );
             states.push_back(std::move(state));
         }
         for (auto& [conn, peer] : peers) {
@@ -387,6 +399,88 @@ namespace {
     }
 }
 
+void detail::write_record(std::string& out, const Record& record) {
+    float yaw = std::fmod(record.yaw, 360.0f);
+    if (yaw < 0) {
+        yaw += 360.0f;
+    }
+    const auto& position = record.position;
+    put_u16(out, record.pid);
+    put_u32(out, static_cast<uint32_t>(static_cast<int32_t>(std::lround(position.x * 256))));
+    put_u32(out, static_cast<uint32_t>(static_cast<int32_t>(std::lround(position.y * 256))));
+    put_u32(out, static_cast<uint32_t>(static_cast<int32_t>(std::lround(position.z * 256))));
+    put_u16(out, static_cast<uint16_t>(std::lround(yaw / 360.0f * 65536.0f) & 0xFFFF));
+    put_u16(out, static_cast<uint16_t>(static_cast<int16_t>(
+        std::clamp<long>(std::lround(record.pitch * 300), -32767, 32767)
+    )));
+    put_u8(out, record.flags);
+}
+
+bool detail::read_record(
+    const std::vector<uint8_t>& data, size_t offset, Record& record
+) {
+    Reader reader {data, offset};
+    record.pid = reader.u16();
+    record.position.x = static_cast<int32_t>(reader.u32()) / 256.0f;
+    record.position.y = static_cast<int32_t>(reader.u32()) / 256.0f;
+    record.position.z = static_cast<int32_t>(reader.u32()) / 256.0f;
+    record.yaw = reader.u16() * 360.0f / 65536.0f;
+    record.pitch = static_cast<int16_t>(reader.u16()) / 300.0f;
+    record.flags = reader.u8();
+    return reader.ok;
+}
+
+Pose detail::sample_at(
+    const std::deque<Sample>& samples, double time, double maxExtrapolation
+) {
+    auto pose_of = [](const Sample& sample) {
+        return Pose {
+            sample.position, {}, sample.yaw, sample.pitch, sample.flags
+        };
+    };
+    if (time <= samples.front().time) {
+        return pose_of(samples.front());
+    }
+    if (time >= samples.back().time) {
+        Pose pose = pose_of(samples.back());
+        if (samples.size() >= 2) {
+            const auto& a = samples[samples.size() - 2];
+            const auto& b = samples.back();
+            glm::vec3 velocity =
+                (b.position - a.position) / static_cast<float>(b.time - a.time);
+            double ahead = time - b.time;
+            if (ahead < maxExtrapolation) {
+                pose.velocity = velocity;
+            } else {
+                ahead = maxExtrapolation;
+            }
+            pose.position += velocity * static_cast<float>(ahead);
+        }
+        return pose;
+    }
+    size_t i = 1;
+    while (samples[i].time < time) {
+        i++;
+    }
+    const auto& a = samples[i - 1];
+    const auto& b = samples[i];
+    double span = b.time - a.time;
+    float k = static_cast<float>((time - a.time) / span);
+    Pose pose = pose_of(b);
+    pose.position = glm::mix(a.position, b.position, k);
+    pose.velocity = (b.position - a.position) / static_cast<float>(span);
+    pose.yaw = lerp_angle(a.yaw, b.yaw, k);
+    pose.pitch = a.pitch + (b.pitch - a.pitch) * k;
+    return pose;
+}
+
+glm::vec3 detail::fade(const glm::vec3& jump, double dt, double halfLife) {
+    if (halfLife <= 0) {
+        return {};
+    }
+    return jump * static_cast<float>(std::exp2(-dt / halfLife));
+}
+
 void replication::configure(const Config& newConfig) {
     config = newConfig;
 }
@@ -405,6 +499,7 @@ void replication::bind_local(ConnectionId connection, int64_t pid) {
     localPid = pid;
     moveSeq = 0;
     clockSet = false;
+    lastFrame = -1.0;
 }
 
 void replication::add_remote(uint32_t serverPid, int64_t pid) {
@@ -442,6 +537,7 @@ void replication::reset() {
     localConnection = 0;
     localPid = -1;
     clockSet = false;
+    lastFrame = -1.0;
     stats = {};
 }
 
@@ -488,7 +584,10 @@ void replication::frame(Level& level) {
     if (!clockSet) {
         return;
     }
-    double time = now_seconds() + serverOffset - config.interpolationDelay;
+    double now = now_seconds();
+    double dt = lastFrame < 0 ? 0.0 : std::max(0.0, now - lastFrame);
+    lastFrame = now;
+    double time = render_time(now);
     for (auto& [_, remote] : remotes) {
         auto& samples = remote.samples;
         if (samples.empty()) {
@@ -502,8 +601,11 @@ void replication::frame(Level& level) {
         if (player == nullptr) {
             continue;
         }
-        Sample sample = sample_at(samples, time);
-        place(level, *player, sample.position, sample.yaw, sample.pitch, sample.flags);
+        Pose pose = sample_at(samples, time, config.maxExtrapolation);
+        remote.jump = fade(remote.jump, dt, config.smoothing);
+        pose.position += remote.jump;
+        place_remote(level, *player, pose);
+        remote.shown = true;
     }
 }
 

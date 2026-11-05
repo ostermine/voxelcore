@@ -1,8 +1,12 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
 #include <limits>
+#include <string>
 #include <vector>
+
+#include <glm/vec3.hpp>
 
 #include "NetGame.hpp"
 
@@ -12,6 +16,8 @@ class Level;
 /// players and sends every connection snapshots of the others, less often
 /// for farther players; the client sends its player's movement and places
 /// remote players smoothly from a buffer of snapshots (interpolation).
+/// Remote players are out of physics (static bodies), their velocity and
+/// the ground flag come from the snapshots for the animations.
 /// Joining, names and other game messages stay with the game scripts.
 ///
 /// Messages on the replication lane (little-endian):
@@ -20,7 +26,7 @@ class Level;
 ///     count times
 ///     u16 pid, i32 x, y, z (1/256 block), u16 yaw (1/65536 turn),
 ///     i16 pitch (1/300 degree), u8 flags
-/// flags: 1 - crouching.
+/// flags: 1 - crouching, 2 - on the ground.
 namespace netgame::replication {
     struct Tier {
         /// players nearer than this (blocks) ...
@@ -38,6 +44,12 @@ namespace netgame::replication {
         double interpolationDelay = 0.1;
         /// ahead of the last snapshot at most this many seconds, then stop
         double maxExtrapolation = 0.25;
+        /// a remote player moved by late snapshots (a pause, lost packets)
+        /// glides to the new place: the rest of the jump halves every this
+        /// many seconds ...
+        double smoothing = 0.08;
+        /// ... but a jump longer than this (blocks) is a teleport
+        float snapDistance = 8.0f;
     };
 
     struct Stats {
@@ -80,4 +92,55 @@ namespace netgame::replication {
 
     /// Counters since the previous call
     Stats take_stats();
+}
+
+/// Encoding and interpolation, open for tests
+namespace netgame::replication::detail {
+    constexpr uint8_t FLAG_CROUCH = 1;
+    constexpr uint8_t FLAG_GROUNDED = 2;
+    constexpr size_t RECORD_SIZE = 19;
+
+    struct Record {
+        uint16_t pid;
+        glm::vec3 position;
+        /// degrees
+        float yaw;
+        float pitch;
+        uint8_t flags;
+    };
+
+    void write_record(std::string& out, const Record& record);
+
+    /// false if the data ends before the record
+    bool read_record(
+        const std::vector<uint8_t>& data, size_t offset, Record& record
+    );
+
+    struct Sample {
+        /// server time, seconds
+        double time;
+        glm::vec3 position;
+        float yaw;
+        float pitch;
+        uint8_t flags;
+    };
+
+    struct Pose {
+        glm::vec3 position;
+        /// blocks per second
+        glm::vec3 velocity;
+        float yaw;
+        float pitch;
+        uint8_t flags;
+    };
+
+    /// The pose at the time: between two samples - interpolated, past the
+    /// last one - extrapolated at most maxExtrapolation seconds, then still.
+    /// samples are not empty and go in time order
+    Pose sample_at(
+        const std::deque<Sample>& samples, double time, double maxExtrapolation
+    );
+
+    /// What is left of a jump after dt seconds
+    glm::vec3 fade(const glm::vec3& jump, double dt, double halfLife);
 }
