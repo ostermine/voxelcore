@@ -3,6 +3,10 @@ project(VoxelCoreSrc)
 file(GLOB_RECURSE headers ${CMAKE_CURRENT_SOURCE_DIR}/*.hpp)
 file(GLOB_RECURSE sources ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
 list(REMOVE_ITEM sources ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp)
+if(NOT VOXELENGINE_NETGAME)
+    list(FILTER sources EXCLUDE REGEX "/network/netgame/|/libnetgame\.cpp$")
+    list(FILTER headers EXCLUDE REGEX "/network/netgame/")
+endif()
 
 add_library(VoxelCoreSrc STATIC ${sources} ${headers})
 
@@ -28,6 +32,9 @@ find_package(CURL REQUIRED)
 find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
 find_package(glfw3 REQUIRED)
 find_package(Freetype REQUIRED)
+if(VOXELENGINE_NETGAME)
+    find_package(GameNetworkingSockets CONFIG REQUIRED)
+endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     find_package(vorbis REQUIRED)
@@ -93,6 +100,19 @@ target_link_libraries(
            glm::glm # Need public for src/delegates.hpp, which including to
                     # main.cpp
 )
+
+if(VOXELENGINE_NETGAME)
+    if(TARGET GameNetworkingSockets::GameNetworkingSockets_s)
+        target_link_libraries(
+            VoxelCoreSrc PRIVATE GameNetworkingSockets::GameNetworkingSockets_s
+        )
+    else()
+        target_link_libraries(
+            VoxelCoreSrc PRIVATE GameNetworkingSockets::GameNetworkingSockets
+        )
+    endif()
+    target_compile_definitions(VoxelCoreSrc PUBLIC VOXELENGINE_NETGAME)
+endif()
 
 target_compile_options(
     VoxelCoreSrc
