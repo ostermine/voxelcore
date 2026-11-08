@@ -102,6 +102,9 @@ namespace {
         glm::vec3 position;
     };
     bool localAuthority = false;
+    /// the player is where the server has it (the ack of command 0): from
+    /// here on commands are made
+    bool localReady = false;
     uint32_t inputSeq = 0;
     uint32_t lastAck = 0;
     /// sent with every input message until acked
@@ -306,11 +309,17 @@ namespace {
         }
         auto& hitbox = entity->getRigidbody().hitbox;
         hitbox.type = BodyType::STATIC;
-        if (applied == 0) {
+        if (applied > 0) {
+            subject.version++;
+            stats.commandsApplied += applied;
+        } else if (subject.lastCommand == 0) {
+            // no commands yet: the client waits for the state to start from
+            // (an ack of command 0, every tick until the commands come), and
+            // the others see the player where it stands
+            subject.version = std::max(subject.version, 1u);
+        } else {
             return;
         }
-        subject.version++;
-        stats.commandsApplied += applied;
 
         std::string message;
         put_u8(message, T_ACK);
@@ -365,7 +374,25 @@ namespace {
         velocity.y = reader.f32();
         velocity.z = reader.f32();
         uint8_t flags = reader.u8();
-        if (!reader.ok || seq <= lastAck || seq > inputSeq) {
+        if (!reader.ok) {
+            return;
+        }
+        if (seq == 0) {
+            // the state to start from, once
+            auto player = localReady ? nullptr : level.players->get(localPid);
+            auto entity = player ? entity_of(level, *player) : nullptr;
+            if (entity == nullptr) {
+                return;
+            }
+            player->setFlight(flags & FLAG_FLIGHT);
+            player->setNoclip(flags & FLAG_NOCLIP);
+            player->teleport(position);
+            entity->getRigidbody().hitbox.velocity = velocity;
+            correction = {};
+            localReady = true;
+            return;
+        }
+        if (seq <= lastAck || seq > inputSeq) {
             return;
         }
         lastAck = seq;
@@ -819,6 +846,7 @@ void replication::bind_local(ConnectionId connection, int64_t pid, bool authorit
     clockSet = false;
     lastFrame = -1.0;
     localAuthority = authority;
+    localReady = false;
     inputSeq = 0;
     lastAck = 0;
     unacked.clear();
@@ -848,7 +876,7 @@ void replication::set_input(int64_t pid, int keys) {
 }
 
 void replication::record_input(Level& level, int64_t pid, int keys, float delta) {
-    if (!localConnection || !localAuthority || pid != localPid) {
+    if (!localConnection || !localAuthority || !localReady || pid != localPid) {
         return;
     }
     auto player = level.players->get(pid);
@@ -908,6 +936,7 @@ void replication::unbind(ConnectionId connection) {
         remotes.clear();
         clockSet = false;
         localAuthority = false;
+        localReady = false;
         unacked.clear();
         history.clear();
         correction = {};
@@ -924,6 +953,7 @@ void replication::reset() {
     clockSet = false;
     lastFrame = -1.0;
     localAuthority = false;
+    localReady = false;
     unacked.clear();
     history.clear();
     correction = {};
