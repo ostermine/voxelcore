@@ -237,6 +237,7 @@ std::vector<netgame::Event> netgame::poll() {
     std::vector<Event> events;
     events.swap(state->events);
 
+    std::vector<Event> received;
     constexpr int BATCH = 64;
     SteamNetworkingMessage_t* messages[BATCH];
     int count;
@@ -249,9 +250,27 @@ std::vector<netgame::Event> netgame::poll() {
             event.lane = message->m_idxLane;
             auto bytes = static_cast<const uint8_t*>(message->m_pData);
             event.data.assign(bytes, bytes + message->m_cbSize);
-            events.push_back(std::move(event));
+            received.push_back(std::move(event));
             message->Release();
         }
+    }
+    // A connection may get connected between RunCallbacks and the receive:
+    // its first message would come before "connected", and a game drops
+    // messages of unknown connections (lost hellos of a crowd joining at
+    // once). Its callback is queued by now: "connected" goes first, other
+    // events wait for the next poll, after the messages they followed
+    state->sockets->RunCallbacks();
+    std::vector<Event> later;
+    for (auto& event : state->events) {
+        if (event.type == EventType::CONNECTED) {
+            events.push_back(std::move(event));
+        } else {
+            later.push_back(std::move(event));
+        }
+    }
+    state->events = std::move(later);
+    for (auto& event : received) {
+        events.push_back(std::move(event));
     }
     return events;
 }
