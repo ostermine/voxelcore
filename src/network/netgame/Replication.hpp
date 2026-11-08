@@ -33,8 +33,9 @@ class Level;
 /// player, and the server repeats them on its copy of the player - the same
 /// core:player with the keys, its own physics step with the same time:
 ///   input, client to server: u8 2, u32 seq of the first, u8 count, then
-///     count times f32 dt (s), u8 keys, u8 1 - keys read (0 - the input
-///     went to a screen), f32 yaw, f32 pitch
+///     count times f32 dt (s), u8 keys, u8 flags (1 - keys read, else the
+///     input went to a screen; 2 - no physics step, the keys only),
+///     f32 yaw, f32 pitch
 ///   ack, server to the owner every tick with new commands: u8 6,
 ///     u32 seq of the last repeated command, f32 x, y, z, vx, vy, vz,
 ///     u8 flags (+ 4 - flight, 8 - noclip; the server decides them)
@@ -219,6 +220,9 @@ namespace netgame::replication::detail {
         bool hasKeys;
         float yaw;
         float pitch;
+        /// false - the keys only, no physics step (the first command: the
+        /// client took the server's state after its step of the frame)
+        bool step = true;
     };
 
     /// An input message of commands with consecutive seqs (at most

@@ -105,6 +105,11 @@ namespace {
     /// the player is where the server has it (the ack of command 0): from
     /// here on commands are made
     bool localReady = false;
+    /// the ack of command 0 came: the player takes the state at the end of
+    /// this frame, when core:player has applied the server's flight
+    bool startPending = false;
+    glm::vec3 startPosition {};
+    glm::vec3 startVelocity {};
     uint32_t inputSeq = 0;
     uint32_t lastAck = 0;
     /// sent with every input message until acked
@@ -267,7 +272,9 @@ namespace {
     void run_command(Level& level, Player& player, Entity& entity, const Command& cmd) {
         auto rotation = player.getRotation();
         player.setRotation({cmd.yaw, cmd.pitch, rotation.z});
-        step_entity(level, entity, player, cmd.dt);
+        if (cmd.step) {
+            step_entity(level, entity, player, cmd.dt);
+        }
         drivingPid = player.getId();
         drivingKeys = -1;
         if (cmd.hasKeys) {
@@ -380,16 +387,14 @@ namespace {
         if (seq == 0) {
             // the state to start from, once
             auto player = localReady ? nullptr : level.players->get(localPid);
-            auto entity = player ? entity_of(level, *player) : nullptr;
-            if (entity == nullptr) {
+            if (player == nullptr) {
                 return;
             }
             player->setFlight(flags & FLAG_FLIGHT);
             player->setNoclip(flags & FLAG_NOCLIP);
-            player->teleport(position);
-            entity->getRigidbody().hitbox.velocity = velocity;
-            correction = {};
-            localReady = true;
+            startPosition = position;
+            startVelocity = velocity;
+            startPending = true;
             return;
         }
         if (seq <= lastAck || seq > inputSeq) {
@@ -794,7 +799,7 @@ void detail::write_input(std::string& out, const std::deque<Command>& commands) 
         const auto& cmd = commands[i];
         put_f32(out, cmd.dt);
         put_u8(out, cmd.keys);
-        put_u8(out, cmd.hasKeys ? 1 : 0);
+        put_u8(out, (cmd.hasKeys ? 1 : 0) | (cmd.step ? 0 : 2));
         put_f32(out, cmd.yaw);
         put_f32(out, cmd.pitch);
     }
@@ -816,7 +821,9 @@ bool detail::read_input(
         cmd.seq = seq + i;
         cmd.dt = reader.f32();
         cmd.keys = reader.u8();
-        cmd.hasKeys = reader.u8() != 0;
+        uint8_t flags = reader.u8();
+        cmd.hasKeys = flags & 1;
+        cmd.step = !(flags & 2);
         cmd.yaw = reader.f32();
         cmd.pitch = reader.f32();
         commands.push_back(cmd);
@@ -847,6 +854,7 @@ void replication::bind_local(ConnectionId connection, int64_t pid, bool authorit
     lastFrame = -1.0;
     localAuthority = authority;
     localReady = false;
+    startPending = false;
     inputSeq = 0;
     lastAck = 0;
     unacked.clear();
@@ -876,7 +884,8 @@ void replication::set_input(int64_t pid, int keys) {
 }
 
 void replication::record_input(Level& level, int64_t pid, int keys, float delta) {
-    if (!localConnection || !localAuthority || !localReady || pid != localPid) {
+    if (!localConnection || !localAuthority || pid != localPid ||
+        !(localReady || startPending)) {
         return;
     }
     auto player = level.players->get(pid);
@@ -885,6 +894,17 @@ void replication::record_input(Level& level, int64_t pid, int keys, float delta)
         return;
     }
     auto& hitbox = entity->getRigidbody().hitbox;
+    bool step = true;
+    if (startPending) {
+        // the server's state; this frame's step was before it, so the
+        // first command has the keys only
+        player->teleport(startPosition);
+        hitbox.velocity = startVelocity;
+        correction = {};
+        startPending = false;
+        localReady = true;
+        step = false;
+    }
     // a part of the difference from the server
     if (correction != glm::vec3(0.0f)) {
         glm::vec3 part = correction - fade(correction, delta, config.correctionSmoothing);
@@ -898,7 +918,8 @@ void replication::record_input(Level& level, int64_t pid, int keys, float delta)
         static_cast<uint8_t>(keys < 0 ? 0 : keys),
         keys >= 0,
         rotation.x,
-        rotation.y
+        rotation.y,
+        step
     };
     unacked.push_back(cmd);
     if (unacked.size() > MAX_COMMANDS) {
@@ -937,6 +958,7 @@ void replication::unbind(ConnectionId connection) {
         clockSet = false;
         localAuthority = false;
         localReady = false;
+        startPending = false;
         unacked.clear();
         history.clear();
         correction = {};
@@ -954,6 +976,7 @@ void replication::reset() {
     lastFrame = -1.0;
     localAuthority = false;
     localReady = false;
+    startPending = false;
     unacked.clear();
     history.clear();
     correction = {};

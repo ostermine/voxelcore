@@ -136,7 +136,7 @@ TEST(netgame_replication, input_round_trip) {
     for (uint32_t i = 0; i < 3; i++) {
         commands.push_back(Command {
             41 + i, 1.0f / 60 + i * 0.001f, static_cast<uint8_t>(1 | (16 << i)),
-            i != 1, 12.34f * i, -5.5f
+            i != 1, 12.34f * i, -5.5f, i != 0
         });
     }
     std::string out;
@@ -154,6 +154,7 @@ TEST(netgame_replication, input_round_trip) {
         EXPECT_EQ(read[i].hasKeys, commands[i].hasKeys);
         EXPECT_EQ(read[i].yaw, commands[i].yaw);
         EXPECT_EQ(read[i].pitch, commands[i].pitch);
+        EXPECT_EQ(read[i].step, commands[i].step);
     }
 }
 
