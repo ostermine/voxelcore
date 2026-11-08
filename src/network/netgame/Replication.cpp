@@ -10,6 +10,7 @@
 
 #include <glm/glm.hpp>
 
+#include "debug/Logger.hpp"
 #include "logic/scripting/scripting.hpp"
 #include "objects/Entities.hpp"
 #include "objects/Entity.hpp"
@@ -21,6 +22,8 @@
 using namespace netgame;
 using namespace netgame::replication;
 using namespace netgame::replication::detail;
+
+static debug::Logger logger("netgame-replication");
 
 namespace {
     constexpr uint8_t T_MOVE = 1;
@@ -333,8 +336,12 @@ namespace {
         uint32_t last = subject.queue.empty() ? subject.lastCommand
                                               : subject.queue.back().seq;
         for (const auto& cmd : commands) {
+            if (cmd.seq <= last) {
+                // sent again until acked
+                continue;
+            }
             stats.commandsReceived++;
-            if (cmd.seq <= last || subject.queue.size() >= MAX_QUEUE ||
+            if (subject.queue.size() >= MAX_QUEUE ||
                 !(cmd.dt > 0.0f && cmd.dt <= MAX_COMMAND_DT) ||
                 !std::isfinite(cmd.yaw) || !std::isfinite(cmd.pitch)) {
                 stats.commandsDropped++;
@@ -390,6 +397,10 @@ namespace {
         }
         stats.corrections++;
         stats.correctionMax = std::max(stats.correctionMax, length);
+        logger.info() << "correction " << length << " at command " << seq
+                      << ": server " << position.x << " " << position.y << " "
+                      << position.z << ", error " << error.x << " " << error.y
+                      << " " << error.z << ", flags " << int(flags);
         auto entity = entity_of(level, *player);
         if (length > config.correctionSnap && entity) {
             auto& hitbox = entity->getRigidbody().hitbox;
