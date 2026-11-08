@@ -206,13 +206,81 @@ static Level& require_level() {
     return *level;
 }
 
+/// {authority = true} at the index
+static bool authority_option(lua::State* L, int idx) {
+    bool authority = false;
+    if (lua::istable(L, idx) && lua::getfield(L, "authority", idx)) {
+        authority = lua::toboolean(L, -1);
+        lua::pop(L);
+    }
+    return authority;
+}
+
+/// bits of the keys, as in Replication.hpp
+static const char* const KEY_NAMES[] = {
+    "forward", "back", "left", "right", "jump", "sprint", "crouch", "cheat"
+};
+
+/// a table of the keys at the index -> bits, -1 for nil
+static int keys_from(lua::State* L, int idx) {
+    if (!lua::istable(L, idx)) {
+        return -1;
+    }
+    int keys = 0;
+    for (int i = 0; i < 8; i++) {
+        if (lua::getfield(L, KEY_NAMES[i], idx)) {
+            if (lua::toboolean(L, -1)) {
+                keys |= 1 << i;
+            }
+            lua::pop(L);
+        }
+    }
+    return keys;
+}
+
+static int push_keys(lua::State* L, int keys) {
+    if (keys < 0) {
+        return lua::pushnil(L);
+    }
+    lua::createtable(L, 0, 8);
+    for (int i = 0; i < 8; i++) {
+        lua::pushboolean(L, keys & (1 << i));
+        lua::setfield(L, KEY_NAMES[i]);
+    }
+    return 1;
+}
+
 static int l_replicate_player(lua::State* L) {
-    netgame::replication::bind_player(lua::tointeger(L, 1), lua::tointeger(L, 2));
+    netgame::replication::bind_player(
+        lua::tointeger(L, 1), lua::tointeger(L, 2), authority_option(L, 3)
+    );
     return 0;
 }
 
 static int l_replicate_local(lua::State* L) {
-    netgame::replication::bind_local(lua::tointeger(L, 1), lua::tointeger(L, 2));
+    netgame::replication::bind_local(
+        lua::tointeger(L, 1), lua::tointeger(L, 2), authority_option(L, 3)
+    );
+    return 0;
+}
+
+static int l_is_driven(lua::State* L) {
+    return lua::pushboolean(L, netgame::replication::is_driven(lua::tointeger(L, 1)));
+}
+
+static int l_get_input(lua::State* L) {
+    return push_keys(L, netgame::replication::get_input(lua::tointeger(L, 1)));
+}
+
+static int l_set_input(lua::State* L) {
+    netgame::replication::set_input(lua::tointeger(L, 1), keys_from(L, 2));
+    return 0;
+}
+
+static int l_record_input(lua::State* L) {
+    netgame::replication::record_input(
+        require_level(), lua::tointeger(L, 1), keys_from(L, 2), lua::tonumber(L, 3)
+    );
     return 0;
 }
 
@@ -260,6 +328,22 @@ static int l_replication_stats(lua::State* L) {
     lua::setfield(L, "bytes");
     lua::pushinteger(L, stats.snapshotsReceived);
     lua::setfield(L, "snapshots");
+    lua::pushinteger(L, stats.commandsReceived);
+    lua::setfield(L, "commands_received");
+    lua::pushinteger(L, stats.commandsApplied);
+    lua::setfield(L, "commands_applied");
+    lua::pushinteger(L, stats.commandsDropped);
+    lua::setfield(L, "commands_dropped");
+    lua::pushinteger(L, stats.acks);
+    lua::setfield(L, "acks");
+    lua::pushinteger(L, stats.commandsRecorded);
+    lua::setfield(L, "commands_recorded");
+    lua::pushinteger(L, stats.corrections);
+    lua::setfield(L, "corrections");
+    lua::pushinteger(L, stats.snaps);
+    lua::setfield(L, "snaps");
+    lua::pushnumber(L, stats.correctionMax);
+    lua::setfield(L, "correction_max");
     return 1;
 }
 
@@ -280,6 +364,26 @@ static int l_configure_replication(lua::State* L) {
         }
         if (lua::getfield(L, "smoothing", 1)) {
             config.smoothing = lua::tonumber(L, -1);
+            lua::pop(L);
+        }
+        if (lua::getfield(L, "input_budget", 1)) {
+            config.inputBudget = lua::tonumber(L, -1);
+            lua::pop(L);
+        }
+        if (lua::getfield(L, "allow_cheat", 1)) {
+            config.allowCheat = lua::toboolean(L, -1);
+            lua::pop(L);
+        }
+        if (lua::getfield(L, "correction_min", 1)) {
+            config.correctionMin = lua::tonumber(L, -1);
+            lua::pop(L);
+        }
+        if (lua::getfield(L, "correction_smoothing", 1)) {
+            config.correctionSmoothing = lua::tonumber(L, -1);
+            lua::pop(L);
+        }
+        if (lua::getfield(L, "correction_snap", 1)) {
+            config.correctionSnap = lua::tonumber(L, -1);
             lua::pop(L);
         }
         if (lua::getfield(L, "glide_min", 1)) {
@@ -333,5 +437,9 @@ const luaL_Reg netgamelib[] = {
     {"replication_frame", lua::wrap<l_replication_frame>},
     {"replication_stats", lua::wrap<l_replication_stats>},
     {"configure_replication", lua::wrap<l_configure_replication>},
+    {"is_driven", lua::wrap<l_is_driven>},
+    {"get_input", lua::wrap<l_get_input>},
+    {"set_input", lua::wrap<l_set_input>},
+    {"record_input", lua::wrap<l_record_input>},
     {nullptr, nullptr}
 };

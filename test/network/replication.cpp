@@ -131,6 +131,50 @@ TEST(netgame_replication, before_first_and_single_sample) {
     EXPECT_EQ(pose.velocity, glm::vec3(0.0f));
 }
 
+TEST(netgame_replication, input_round_trip) {
+    std::deque<Command> commands;
+    for (uint32_t i = 0; i < 3; i++) {
+        commands.push_back(Command {
+            41 + i, 1.0f / 60 + i * 0.001f, static_cast<uint8_t>(1 | (16 << i)),
+            i != 1, 12.34f * i, -5.5f
+        });
+    }
+    std::string out;
+    write_input(out, commands);
+    ASSERT_EQ(out.size(), 6 + 3 * COMMAND_SIZE);
+
+    std::vector<Command> read;
+    ASSERT_TRUE(read_input(bytes_of(out), read));
+    ASSERT_EQ(read.size(), 3u);
+    for (size_t i = 0; i < 3; i++) {
+        EXPECT_EQ(read[i].seq, commands[i].seq);
+        // the server steps with exactly the client's time and rotation
+        EXPECT_EQ(read[i].dt, commands[i].dt);
+        EXPECT_EQ(read[i].keys, commands[i].keys);
+        EXPECT_EQ(read[i].hasKeys, commands[i].hasKeys);
+        EXPECT_EQ(read[i].yaw, commands[i].yaw);
+        EXPECT_EQ(read[i].pitch, commands[i].pitch);
+    }
+}
+
+TEST(netgame_replication, input_keeps_the_last_and_rejects_broken) {
+    std::deque<Command> commands;
+    for (uint32_t i = 1; i <= MAX_COMMANDS + 10; i++) {
+        commands.push_back(Command {i, 0.05f, 0, true, 0.0f, 0.0f});
+    }
+    std::string out;
+    write_input(out, commands);
+    std::vector<Command> read;
+    ASSERT_TRUE(read_input(bytes_of(out), read));
+    ASSERT_EQ(read.size(), MAX_COMMANDS);
+    EXPECT_EQ(read.front().seq, 11u);
+    EXPECT_EQ(read.back().seq, MAX_COMMANDS + 10);
+
+    auto data = bytes_of(out);
+    data.pop_back();
+    EXPECT_FALSE(read_input(data, read));
+}
+
 TEST(netgame_replication, jump_fades) {
     glm::vec3 jump {4.0f, 0.0f, -2.0f};
     EXPECT_NEAR(fade(jump, 0.08, 0.08).x, 2.0f, 1e-4f);

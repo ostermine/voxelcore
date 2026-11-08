@@ -4,15 +4,18 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <unordered_map>
 
 #include <glm/glm.hpp>
 
+#include "logic/scripting/scripting.hpp"
 #include "objects/Entities.hpp"
 #include "objects/Entity.hpp"
 #include "objects/Player.hpp"
 #include "objects/Players.hpp"
+#include "physics/PhysicsSolver.hpp"
 #include "world/Level.hpp"
 
 using namespace netgame;
@@ -21,10 +24,20 @@ using namespace netgame::replication::detail;
 
 namespace {
     constexpr uint8_t T_MOVE = 1;
+    constexpr uint8_t T_INPUT = 2;
     constexpr uint8_t T_SNAPSHOT = 5;
+    constexpr uint8_t T_ACK = 6;
+    constexpr uint8_t FLAG_FLIGHT = 4;
+    constexpr uint8_t FLAG_NOCLIP = 8;
     /// 7 + 60 * 19 bytes fits one UDP packet
     constexpr int MAX_RECORDS = 60;
     constexpr size_t MAX_SAMPLES = 32;
+    /// server: commands waiting per player (a second at 256 FPS)
+    constexpr size_t MAX_QUEUE = 256;
+    /// client: positions after its commands kept for the acks
+    constexpr size_t MAX_HISTORY = 1024;
+    /// a command of a longer step is broken
+    constexpr float MAX_COMMAND_DT = 0.25f;
 
     Config config;
     Stats stats;
@@ -41,6 +54,16 @@ namespace {
         uint32_t version = 0;
         /// from the client until the server moves players itself
         uint8_t flags = 0;
+
+        // authoritative movement
+        bool authority = false;
+        std::deque<Command> queue;
+        /// seconds of commands that may be repeated now
+        double budget = 0.2;
+        double budgetTime = -1.0;
+        /// the last repeated command, 0 - none yet
+        uint32_t lastCommand = 0;
+        bool ackDue = false;
     };
     std::unordered_map<ConnectionId, ServerPeer> peers;
     std::unordered_map<int64_t, Subject> subjects;
@@ -68,6 +91,26 @@ namespace {
     /// server time minus local time, seconds
     double serverOffset = 0.0;
     double lastFrame = -1.0;
+
+    // client, authoritative movement
+    struct Predicted {
+        uint32_t seq;
+        /// where the player was after the command
+        glm::vec3 position;
+    };
+    bool localAuthority = false;
+    uint32_t inputSeq = 0;
+    uint32_t lastAck = 0;
+    /// sent with every input message until acked
+    std::deque<Command> unacked;
+    std::deque<Predicted> history;
+    /// the player is still to move by this (blocks)
+    glm::vec3 correction {};
+
+    // keys for core:player instead of the keyboard
+    int64_t drivingPid = -1;
+    int drivingKeys = -1;
+    std::unordered_map<int64_t, int> presetInputs;
 
     double now_seconds() {
         using namespace std::chrono;
@@ -174,6 +217,188 @@ namespace {
             hitbox.velocity = pose.velocity;
             hitbox.grounded = pose.flags & FLAG_GROUNDED;
             hitbox.crouching = pose.flags & FLAG_CROUCH;
+        }
+    }
+
+    /// One physics step of the body alone, as Entities::updatePhysics does
+    /// it for all of them
+    void step_entity(Level& level, Entity& entity, Player& player, float dt) {
+        auto& rigidbody = entity.getRigidbody();
+        auto& hitbox = rigidbody.hitbox;
+        auto& transform = entity.getTransform();
+        if (!rigidbody.enabled) {
+            return;
+        }
+        hitbox.type = player.isNoclip() ? BodyType::KINEMATIC : BodyType::DYNAMIC;
+        hitbox.scale = transform.size;
+        hitbox.selectable = rigidbody.selectable;
+        hitbox.mass = hitbox.type == BodyType::DYNAMIC
+                          ? rigidbody.mass
+                          : std::numeric_limits<float>::infinity();
+        hitbox.elasticity = rigidbody.elasticity;
+        auto substeps = static_cast<unsigned>(
+            std::max(std::min(static_cast<int>(dt * 1000), 200), 8)
+        );
+        level.physics->stepOne(hitbox, dt, substeps);
+        if (!std::isfinite(hitbox.position.x) || !std::isfinite(hitbox.position.y) ||
+            !std::isfinite(hitbox.position.z)) {
+            hitbox.position = transform.pos;
+        } else {
+            transform.setPos(hitbox.position);
+        }
+        if (hitbox.grounded && !hitbox.prevGrounded) {
+            scripting::on_entity_grounded(
+                entity, glm::length(hitbox.prevVelocity - hitbox.velocity)
+            );
+        }
+        if (!hitbox.grounded && hitbox.prevGrounded) {
+            scripting::on_entity_fall(entity);
+        }
+    }
+
+    /// Server: the command as the client made it - a physics step of its
+    /// time, then core:player with its keys
+    void run_command(Level& level, Player& player, Entity& entity, const Command& cmd) {
+        auto rotation = player.getRotation();
+        player.setRotation({cmd.yaw, cmd.pitch, rotation.z});
+        step_entity(level, entity, player, cmd.dt);
+        drivingPid = player.getId();
+        drivingKeys = -1;
+        if (cmd.hasKeys) {
+            drivingKeys = config.allowCheat ? cmd.keys : (cmd.keys & ~KEY_CHEAT);
+        }
+        scripting::on_entity_physics_update(entity, cmd.dt);
+        drivingPid = -1;
+        drivingKeys = -1;
+    }
+
+    uint8_t ack_flags_of(Level& level, const Player& player) {
+        return flags_of(level, player) | (player.isFlight() ? FLAG_FLIGHT : 0) |
+               (player.isNoclip() ? FLAG_NOCLIP : 0);
+    }
+
+    /// Server: repeat the commands that came, out of the common physics step
+    void drive(Level& level, ConnectionId conn, int64_t pid, Subject& subject) {
+        auto player = level.players->get(pid);
+        auto entity = player ? entity_of(level, *player) : nullptr;
+        if (entity == nullptr) {
+            return;
+        }
+        double now = now_seconds();
+        if (subject.budgetTime >= 0) {
+            subject.budget = std::min(
+                config.inputBudget, subject.budget + (now - subject.budgetTime)
+            );
+        }
+        subject.budgetTime = now;
+        int applied = 0;
+        while (!subject.queue.empty() &&
+               subject.queue.front().dt <= subject.budget + 1e-6) {
+            Command cmd = subject.queue.front();
+            subject.queue.pop_front();
+            subject.budget -= cmd.dt;
+            run_command(level, *player, *entity, cmd);
+            subject.lastCommand = cmd.seq;
+            applied++;
+        }
+        auto& hitbox = entity->getRigidbody().hitbox;
+        hitbox.type = BodyType::STATIC;
+        if (applied == 0) {
+            return;
+        }
+        subject.version++;
+        stats.commandsApplied += applied;
+
+        std::string message;
+        put_u8(message, T_ACK);
+        put_u32(message, subject.lastCommand);
+        put_f32(message, hitbox.position.x);
+        put_f32(message, hitbox.position.y);
+        put_f32(message, hitbox.position.z);
+        put_f32(message, hitbox.velocity.x);
+        put_f32(message, hitbox.velocity.y);
+        put_f32(message, hitbox.velocity.z);
+        put_u8(message, ack_flags_of(level, *player));
+        if (netgame::send(conn, message, {false, true, config.lane})) {
+            stats.acks++;
+        }
+    }
+
+    /// Server: commands from the client into the queue of its player
+    void queue_input(Subject& subject, const std::vector<uint8_t>& data) {
+        std::vector<Command> commands;
+        if (!read_input(data, commands)) {
+            return;
+        }
+        uint32_t last = subject.queue.empty() ? subject.lastCommand
+                                              : subject.queue.back().seq;
+        for (const auto& cmd : commands) {
+            stats.commandsReceived++;
+            if (cmd.seq <= last || subject.queue.size() >= MAX_QUEUE ||
+                !(cmd.dt > 0.0f && cmd.dt <= MAX_COMMAND_DT) ||
+                !std::isfinite(cmd.yaw) || !std::isfinite(cmd.pitch)) {
+                stats.commandsDropped++;
+                continue;
+            }
+            subject.queue.push_back(cmd);
+            last = cmd.seq;
+        }
+    }
+
+    /// Client: where the server has the player after a command
+    void read_ack(Level& level, const std::vector<uint8_t>& data) {
+        Reader reader {data};
+        reader.u8();
+        uint32_t seq = reader.u32();
+        glm::vec3 position, velocity;
+        position.x = reader.f32();
+        position.y = reader.f32();
+        position.z = reader.f32();
+        velocity.x = reader.f32();
+        velocity.y = reader.f32();
+        velocity.z = reader.f32();
+        uint8_t flags = reader.u8();
+        if (!reader.ok || seq <= lastAck || seq > inputSeq) {
+            return;
+        }
+        lastAck = seq;
+        while (!unacked.empty() && unacked.front().seq <= seq) {
+            unacked.pop_front();
+        }
+        while (!history.empty() && history.front().seq < seq) {
+            history.pop_front();
+        }
+        auto player = level.players->get(localPid);
+        if (player == nullptr) {
+            return;
+        }
+        // the server decides
+        player->setFlight(flags & FLAG_FLIGHT);
+        player->setNoclip(flags & FLAG_NOCLIP);
+        if (history.empty() || history.front().seq != seq) {
+            return;
+        }
+        glm::vec3 error = position - history.front().position;
+        history.pop_front();
+        float length = glm::length(error);
+        if (!(length > config.correctionMin)) {
+            return;
+        }
+        // the later commands were made from the wrong place too
+        for (auto& predicted : history) {
+            predicted.position += error;
+        }
+        stats.corrections++;
+        stats.correctionMax = std::max(stats.correctionMax, length);
+        auto entity = entity_of(level, *player);
+        if (length > config.correctionSnap && entity) {
+            auto& hitbox = entity->getRigidbody().hitbox;
+            player->teleport(hitbox.position + correction + error);
+            hitbox.velocity = velocity;
+            correction = {};
+            stats.snaps++;
+        } else {
+            correction += error;
         }
     }
 
@@ -323,6 +548,12 @@ namespace {
             uint32_t version;
             std::string record;
         };
+        for (auto& [conn, peer] : peers) {
+            auto subject = subjects.find(peer.pid);
+            if (subject != subjects.end() && subject->second.authority) {
+                drive(level, conn, peer.pid, subject->second);
+            }
+        }
         std::vector<State> states;
         for (const auto& [_, peer] : peers) {
             auto subject = subjects.find(peer.pid);
@@ -331,7 +562,15 @@ namespace {
                 subject->second.version == 0) {
                 continue;
             }
-            const auto& position = player->getPosition();
+            glm::vec3 position = player->getPosition();
+            uint8_t flags = subject->second.flags;
+            if (subject->second.authority) {
+                // moved this tick, the player catches up on the next frame
+                if (auto entity = entity_of(level, *player)) {
+                    position = entity->getRigidbody().hitbox.position;
+                }
+                flags = flags_of(level, *player);
+            }
             auto rotation = player->getRotation();
             State state {peer.pid, position, subject->second.version, {}};
             write_record(
@@ -341,7 +580,7 @@ namespace {
                     position,
                     rotation.x,
                     rotation.y,
-                    subject->second.flags
+                    flags
                 }
             );
             states.push_back(std::move(state));
@@ -401,6 +640,15 @@ namespace {
     void client_tick(Level& level) {
         auto player = level.players->get(localPid);
         if (player == nullptr) {
+            return;
+        }
+        if (localAuthority) {
+            // every command until acked: a lost message costs nothing
+            if (!unacked.empty()) {
+                std::string message;
+                write_input(message, unacked);
+                netgame::send(localConnection, message, {false, true, config.lane});
+            }
             return;
         }
         const auto& position = player->getPosition();
@@ -498,6 +746,46 @@ glm::vec3 detail::fade(const glm::vec3& jump, double dt, double halfLife) {
     return jump * static_cast<float>(std::exp2(-dt / halfLife));
 }
 
+void detail::write_input(std::string& out, const std::deque<Command>& commands) {
+    size_t count = std::min(commands.size(), MAX_COMMANDS);
+    size_t first = commands.size() - count;
+    put_u8(out, T_INPUT);
+    put_u32(out, count ? commands[first].seq : 0);
+    put_u8(out, static_cast<uint8_t>(count));
+    for (size_t i = first; i < commands.size(); i++) {
+        const auto& cmd = commands[i];
+        put_f32(out, cmd.dt);
+        put_u8(out, cmd.keys);
+        put_u8(out, cmd.hasKeys ? 1 : 0);
+        put_f32(out, cmd.yaw);
+        put_f32(out, cmd.pitch);
+    }
+}
+
+bool detail::read_input(
+    const std::vector<uint8_t>& data, std::vector<Command>& commands
+) {
+    Reader reader {data};
+    reader.u8();
+    uint32_t seq = reader.u32();
+    uint8_t count = reader.u8();
+    if (!reader.ok || data.size() != 6 + count * COMMAND_SIZE) {
+        return false;
+    }
+    commands.clear();
+    for (int i = 0; i < count; i++) {
+        Command cmd;
+        cmd.seq = seq + i;
+        cmd.dt = reader.f32();
+        cmd.keys = reader.u8();
+        cmd.hasKeys = reader.u8() != 0;
+        cmd.yaw = reader.f32();
+        cmd.pitch = reader.f32();
+        commands.push_back(cmd);
+    }
+    return reader.ok;
+}
+
 void replication::configure(const Config& newConfig) {
     config = newConfig;
 }
@@ -506,17 +794,82 @@ const Config& replication::get_config() {
     return config;
 }
 
-void replication::bind_player(ConnectionId connection, int64_t pid) {
+void replication::bind_player(ConnectionId connection, int64_t pid, bool authority) {
     peers[connection] = ServerPeer {pid, {}};
-    subjects[pid] = Subject {};
+    Subject subject;
+    subject.authority = authority;
+    subjects[pid] = std::move(subject);
 }
 
-void replication::bind_local(ConnectionId connection, int64_t pid) {
+void replication::bind_local(ConnectionId connection, int64_t pid, bool authority) {
     localConnection = connection;
     localPid = pid;
     moveSeq = 0;
     clockSet = false;
     lastFrame = -1.0;
+    localAuthority = authority;
+    inputSeq = 0;
+    lastAck = 0;
+    unacked.clear();
+    history.clear();
+    correction = {};
+}
+
+bool replication::is_driven(int64_t pid) {
+    auto found = subjects.find(pid);
+    return found != subjects.end() && found->second.authority;
+}
+
+int replication::get_input(int64_t pid) {
+    if (pid == drivingPid) {
+        return drivingKeys;
+    }
+    auto found = presetInputs.find(pid);
+    return found == presetInputs.end() ? -1 : found->second;
+}
+
+void replication::set_input(int64_t pid, int keys) {
+    if (keys < 0) {
+        presetInputs.erase(pid);
+    } else {
+        presetInputs[pid] = keys & 0xFF;
+    }
+}
+
+void replication::record_input(Level& level, int64_t pid, int keys, float delta) {
+    if (!localConnection || !localAuthority || pid != localPid) {
+        return;
+    }
+    auto player = level.players->get(pid);
+    auto entity = player ? entity_of(level, *player) : nullptr;
+    if (entity == nullptr) {
+        return;
+    }
+    auto& hitbox = entity->getRigidbody().hitbox;
+    // a part of the difference from the server
+    if (correction != glm::vec3(0.0f)) {
+        glm::vec3 part = correction - fade(correction, delta, config.correctionSmoothing);
+        correction -= part;
+        player->teleport(hitbox.position + part);
+    }
+    auto rotation = player->getRotation();
+    Command cmd {
+        ++inputSeq,
+        delta,
+        static_cast<uint8_t>(keys < 0 ? 0 : keys),
+        keys >= 0,
+        rotation.x,
+        rotation.y
+    };
+    unacked.push_back(cmd);
+    if (unacked.size() > MAX_COMMANDS) {
+        unacked.pop_front();
+    }
+    history.push_back({cmd.seq, hitbox.position + correction});
+    if (history.size() > MAX_HISTORY) {
+        history.pop_front();
+    }
+    stats.commandsRecorded++;
 }
 
 void replication::add_remote(uint32_t serverPid, int64_t pid) {
@@ -543,6 +896,10 @@ void replication::unbind(ConnectionId connection) {
         localPid = -1;
         remotes.clear();
         clockSet = false;
+        localAuthority = false;
+        unacked.clear();
+        history.clear();
+        correction = {};
     }
 }
 
@@ -555,6 +912,11 @@ void replication::reset() {
     localPid = -1;
     clockSet = false;
     lastFrame = -1.0;
+    localAuthority = false;
+    unacked.clear();
+    history.clear();
+    correction = {};
+    presetInputs.clear();
     stats = {};
 }
 
@@ -564,17 +926,31 @@ bool replication::consume(const Event& event, Level& level) {
         return false;
     }
     uint8_t type = event.data[0];
-    if (type == T_MOVE) {
+    if (type == T_MOVE || type == T_INPUT) {
         auto found = peers.find(event.connection);
         if (found == peers.end()) {
             return false;
         }
-        apply_move(level, found->second.pid, event.data);
+        int64_t pid = found->second.pid;
+        auto& subject = subjects[pid];
+        // an authoritative player does not tell where it is, a trusted one
+        // has nothing to repeat
+        if (type == T_INPUT && subject.authority) {
+            queue_input(subject, event.data);
+        } else if (type == T_MOVE && !subject.authority) {
+            apply_move(level, pid, event.data);
+        }
         return true;
     }
-    if (type == T_SNAPSHOT && localConnection &&
-        event.connection == localConnection) {
+    bool fromServer = localConnection && event.connection == localConnection;
+    if (type == T_SNAPSHOT && fromServer) {
         read_snapshot(event.data);
+        return true;
+    }
+    if (type == T_ACK && fromServer) {
+        if (localAuthority) {
+            read_ack(level, event.data);
+        }
         return true;
     }
     return false;

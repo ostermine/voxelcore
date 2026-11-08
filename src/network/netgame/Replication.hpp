@@ -27,6 +27,21 @@ class Level;
 ///     u16 pid, i32 x, y, z (1/256 block), u16 yaw (1/65536 turn),
 ///     i16 pitch (1/300 degree), u8 flags
 /// flags: 1 - crouching, 2 - on the ground.
+///
+/// Authoritative movement (both sides bound with authority): instead of
+/// positions the client sends its input, a command per physics step of its
+/// player, and the server repeats them on its copy of the player - the same
+/// core:player with the keys, its own physics step with the same time:
+///   input, client to server: u8 2, u32 seq of the first, u8 count, then
+///     count times f32 dt (s), u8 keys, u8 1 - keys read (0 - the input
+///     went to a screen), f32 yaw, f32 pitch
+///   ack, server to the owner every tick with new commands: u8 6,
+///     u32 seq of the last repeated command, f32 x, y, z, vx, vy, vz,
+///     u8 flags (+ 4 - flight, 8 - noclip; the server decides them)
+/// The client keeps where its player was after each command and moves it
+/// by the difference from the server (prediction and reconciliation).
+/// keys: 1 forward, 2 back, 4 left, 8 right, 16 jump, 32 sprint,
+/// 64 crouch, 128 cheat.
 namespace netgame::replication {
     struct Tier {
         /// players nearer than this (blocks) ...
@@ -53,6 +68,19 @@ namespace netgame::replication {
         float glideMin = 0.25f;
         /// ... and a jump longer than this (blocks) is a teleport
         float snapDistance = 8.0f;
+
+        /// server: commands are repeated no faster than real time (a speed
+        /// hack waits); this much time may be saved up for late commands
+        double inputBudget = 0.5;
+        /// server: the cheat key (10 times faster) is ignored unless allowed
+        bool allowCheat = false;
+        /// client: a difference from the server shorter than this (blocks)
+        /// is left as it is ...
+        float correctionMin = 0.01f;
+        /// ... a longer one fades (halves every this many seconds) ...
+        double correctionSmoothing = 0.05;
+        /// ... and a difference longer than this (blocks) is fixed at once
+        float correctionSnap = 2.0f;
     };
 
     struct Stats {
@@ -65,17 +93,47 @@ namespace netgame::replication {
         int64_t messages = 0;
         int64_t bytes = 0;
         int64_t snapshotsReceived = 0;
+
+        /// authoritative movement, server: commands received, repeated,
+        /// dropped (a full queue, repeated or old), acks sent
+        int64_t commandsReceived = 0;
+        int64_t commandsApplied = 0;
+        int64_t commandsDropped = 0;
+        int64_t acks = 0;
+        /// client: commands made, differences from the server fixed (of
+        /// them at once), the longest difference (blocks)
+        int64_t commandsRecorded = 0;
+        int64_t corrections = 0;
+        int64_t snaps = 0;
+        float correctionMax = 0.0f;
     };
 
     void configure(const Config& config);
     const Config& get_config();
 
     /// Server: movement from the connection moves the player, and the
-    /// connection gets snapshots of the other bound players
-    void bind_player(ConnectionId connection, int64_t pid);
+    /// connection gets snapshots of the other bound players. With authority
+    /// the connection sends commands, and the server moves the player
+    void bind_player(ConnectionId connection, int64_t pid, bool authority = false);
 
-    /// Client: send the movement of the local player to the server
-    void bind_local(ConnectionId connection, int64_t pid);
+    /// Client: send the movement of the local player to the server, with
+    /// authority - its commands (record_input), fixing the player by acks
+    void bind_local(ConnectionId connection, int64_t pid, bool authority = false);
+
+    /// Server: the player is moved by its client's commands (out of the
+    /// common physics step)
+    bool is_driven(int64_t pid);
+
+    /// Keys core:player applies to the player instead of the keyboard: the
+    /// command being repeated (server) or set by set_input (bots, tests).
+    /// -1 - none
+    int get_input(int64_t pid);
+    /// keys < 0 - none
+    void set_input(int64_t pid, int keys);
+
+    /// Client: core:player applied keys (< 0 - none, the input went to a
+    /// screen) to the player for a step of delta seconds
+    void record_input(Level& level, int64_t pid, int keys, float delta);
 
     /// Client: snapshots of the server player move the local remote player
     void add_remote(uint32_t serverPid, int64_t localPid);
@@ -146,4 +204,27 @@ namespace netgame::replication::detail {
 
     /// What is left of a jump after dt seconds
     glm::vec3 fade(const glm::vec3& jump, double dt, double halfLife);
+
+    constexpr uint8_t KEY_CHEAT = 128;
+    constexpr size_t COMMAND_SIZE = 14;
+    /// commands per input message: 6 + 64 * 14 bytes fits one UDP packet
+    constexpr size_t MAX_COMMANDS = 64;
+
+    struct Command {
+        uint32_t seq;
+        /// seconds of the physics step
+        float dt;
+        uint8_t keys;
+        /// false - the input went to a screen, no keys applied
+        bool hasKeys;
+        float yaw;
+        float pitch;
+    };
+
+    /// An input message of commands with consecutive seqs (at most
+    /// MAX_COMMANDS, the last ones)
+    void write_input(std::string& out, const std::deque<Command>& commands);
+
+    /// false if the message is broken
+    bool read_input(const std::vector<uint8_t>& data, std::vector<Command>& commands);
 }
