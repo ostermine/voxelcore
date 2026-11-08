@@ -351,6 +351,16 @@ void scripting::on_entities_physics_update(float delta) {
     lua::pop(L);
 }
 
+void scripting::on_entity_physics_update(const Entity& entity, float delta) {
+    for (auto& component : entity.getScripting().components) {
+        process_entity_callback(
+            component->env,
+            "on_physics_update",
+            [delta](auto L) { return lua::pushnumber(L, delta); }
+        );
+    }
+}
+
 void scripting::on_entities_render(float delta) {
     auto L = lua::get_main_state();
     lua::get_from(L, STDCOMP, "render", true);
