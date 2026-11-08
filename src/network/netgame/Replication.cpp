@@ -429,7 +429,7 @@ namespace {
         }
         stats.corrections++;
         stats.correctionMax = std::max(stats.correctionMax, length);
-        logger.info() << "correction " << length << " at command " << seq
+        logger.debug() << "correction " << length << " at command " << seq
                       << ": server " << position.x << " " << position.y << " "
                       << position.z << ", error " << error.x << " " << error.y
                       << " " << error.z << ", flags " << int(flags);
