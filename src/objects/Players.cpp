@@ -121,6 +121,9 @@ dv::value Players::serialize() const {
     auto& list = root.list("players");
 
     for (const auto& [id, player] : players) {
+        if (player->isTransient()) {
+            continue;
+        }
         list.add(player->serialize());
     }
     return root;

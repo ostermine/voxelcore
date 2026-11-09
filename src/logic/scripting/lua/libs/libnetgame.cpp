@@ -7,6 +7,9 @@
 #include "logic/scripting/scripting.hpp"
 #include "network/netgame/NetGame.hpp"
 #include "network/netgame/Replication.hpp"
+#include "objects/Player.hpp"
+#include "objects/Players.hpp"
+#include "world/Level.hpp"
 
 using namespace scripting;
 
@@ -206,6 +209,18 @@ static Level& require_level() {
     return *level;
 }
 
+/// A copy of a player of another process is not saved with the world: it
+/// would come back on the next open with its body, and a body in a chunk
+/// not loaded yet survives player.delete
+static void set_transient(int64_t pid) {
+    if (level == nullptr) {
+        return;
+    }
+    if (auto player = level->players->get(pid)) {
+        player->setTransient(true);
+    }
+}
+
 /// {authority = true} at the index
 static bool authority_option(lua::State* L, int idx) {
     bool authority = false;
@@ -254,6 +269,7 @@ static int l_replicate_player(lua::State* L) {
     netgame::replication::bind_player(
         lua::tointeger(L, 1), lua::tointeger(L, 2), authority_option(L, 3)
     );
+    set_transient(lua::tointeger(L, 2));
     return 0;
 }
 
@@ -291,6 +307,7 @@ static int l_unreplicate(lua::State* L) {
 
 static int l_add_remote(lua::State* L) {
     netgame::replication::add_remote(lua::tointeger(L, 1), lua::tointeger(L, 2));
+    set_transient(lua::tointeger(L, 2));
     return 0;
 }
 
