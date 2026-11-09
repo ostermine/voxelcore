@@ -54,6 +54,7 @@ class Player : public Serializable {
     glm::vec3 spawnpoint {std::nanf(""), std::nanf(""), std::nanf("")};
     std::shared_ptr<Inventory> inventory;
     bool suspended = false;
+    bool transient = false;
     bool flight = false;
     bool noclip = false;
     bool infiniteItems = true;
@@ -105,6 +106,11 @@ public:
 
     bool isSuspended() const;
     void setSuspended(bool flag);
+
+    /// Not saved with the world, nor its entity (netgame: a copy of a
+    /// player of another process)
+    bool isTransient() const;
+    void setTransient(bool flag);
 
     bool isFlight() const;
     void setFlight(bool flag);
