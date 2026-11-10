@@ -27,9 +27,10 @@ public:
     /// @param confirmConvert automatically confirm convert if requested
     void openWorld(const std::string& name, bool confirmConvert);
 
-    /// @brief Show world removal confirmation dialog
+    /// @brief Delete world, by default after a confirmation dialog
     /// @param name world name
-    void deleteWorld(const std::string& name);
+    /// @param confirm show the dialog first (no dialog in headless mode)
+    void deleteWorld(const std::string& name, bool confirm = true);
 
     void deleteWorldContent(
         const std::string& name, ContentRemovalRequest request, bool loadWorld
