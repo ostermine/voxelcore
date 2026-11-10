@@ -164,7 +164,10 @@ function on_physics_update(delta)
     local rotate_speed = entity:get_player() == -1 and 200 or 400
 
     if math.abs(adelta) > 5 then
-        angle = angle + delta * rotate_speed * (adelta > 0 and 1 or -1)
+        -- not past the target: a step longer than twice the dead zone
+        -- (below 40 FPS) would swing the body around it forever
+        local step = math.min(delta * rotate_speed, math.abs(adelta))
+        angle = angle + step * (adelta > 0 and 1 or -1)
     end
 
     tsf:set_rot(mat4.rotate({0, 1, 0}, angle + 180))
