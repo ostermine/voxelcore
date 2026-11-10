@@ -114,6 +114,7 @@ void ModelViewer::draw(const DrawContext& pctx, const Assets& assets) {
     if (model == nullptr) {
         return;
     }
+    pctx.getBatch2D()->flush();
     auto& prevShader = Shader::getUsed();
 
     if (!fbo) {
@@ -177,6 +178,22 @@ void ModelViewer::setCenter(const glm::vec3& center) {
     this->center = center;
 }
 
+const glm::vec3& ModelViewer::getCenter() const {
+    return center;
+}
+
 void ModelViewer::setRotation(const glm::vec3& euler) {
     this->rotation = euler;
+}
+
+const glm::vec3& ModelViewer::getRotation() const {
+    return rotation;
+}
+
+void ModelViewer::setDistance(float distance) {
+    this->distance = distance;
+}
+
+float ModelViewer::getDistance() const {
+    return distance;
 }
