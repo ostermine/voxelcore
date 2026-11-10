@@ -321,10 +321,12 @@ static int l_close_world(lua::State* L) {
 
 /// @brief Delete world
 /// @param name Name world
+/// @param force Delete without the confirmation dialog
 static int l_delete_world(lua::State* L) {
     auto name = lua::require_string(L, 1);
+    bool force = lua::toboolean(L, 2);
     auto controller = engine->getController();
-    controller->deleteWorld(name);
+    controller->deleteWorld(name, !force);
     return 0;
 }
 
