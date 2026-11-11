@@ -51,11 +51,13 @@ LevelController::LevelController(
     scripting::on_world_load(this);
 
     // TODO: do something to players added later
+    // a world without generation waits for no chunk: they come later
+    bool generation = chunks->isGenerationEnabled();
     int confirmed;
     do {
         confirmed = 0;
         for (const auto& [_, player] : *level->players) {
-            if (!player->isLoadingChunks()) {
+            if (!player->isLoadingChunks() || !generation) {
                 confirmed++;
                 continue;
             }
