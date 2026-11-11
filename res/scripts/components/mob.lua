@@ -56,19 +56,20 @@ function move_vertical(speed, vel)
     body:set_vel(vel)
 end
 
-local function move_horizontal(speed, dir, vel)
+local function move_horizontal(speed, dir, vel, delta)
     vel = vel or body:get_vel()
     if vec2.length(dir) > 0.0 then
         vec2.normalize(dir, dir)
 
-        local delta = time.delta()
+        delta = delta or time.delta()
         vel[1] = vel[1] + dir[1] * speed * delta
         vel[3] = vel[3] + dir[2] * speed * delta
     end
     body:set_vel(vel)
 end
 
-function go(dir, speed_multiplier, sprint, crouch, vel)
+-- delta: seconds of the step, time.delta() by default
+function go(dir, speed_multiplier, sprint, crouch, vel, delta)
     local speed = props.movement_speed * speed_multiplier
     if flight then
         speed = speed * props.flight_speed_mul
@@ -78,7 +79,7 @@ function go(dir, speed_multiplier, sprint, crouch, vel)
     elseif crouch then
         speed = speed * props.crouch_speed_mul
     end
-    move_horizontal(speed, dir, vel)
+    move_horizontal(speed, dir, vel, delta)
 end
 
 local headIndex = rig:index("head")
