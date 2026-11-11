@@ -47,6 +47,16 @@ block.get_variant(x: int, y: int, z: int) -> int
 
 -- Устанавливает вариант блока по индексу
 block.set_variant(x: int, y: int, z: int, index: int)
+
+-- Включает запись изменённых блоков (id или состояние) любым путём:
+-- set/place/destruct, set_states, set_rotation, set_user_bits,
+-- set_variant, такты блоков. Поля блоков не записываются. Выключено
+-- по умолчанию (например, сервер сетевой игры рассылает изменения).
+block.track_changes(flag: bool)
+
+-- Возвращает позиции блоков, изменённых с прошлого вызова, подряд:
+-- {x1, y1, z1, x2, y2, z2, ...}; позиции могут повторяться.
+block.pop_changes() -> table
 ```
 
 > [!WARNING]

@@ -3,6 +3,7 @@
 #include "maths/rays.hpp"
 
 #include <limits>
+#include <utility>
 
 using namespace blocks_agent;
 
@@ -12,6 +13,26 @@ std::vector<BlockRegisterEvent> blocks_agent::pull_register_events() {
     auto events = block_register_events;
     block_register_events.clear();
     return events;
+}
+
+static bool changes_tracking = false;
+static std::vector<glm::ivec3> block_changes {};
+
+void blocks_agent::set_changes_tracking(bool flag) {
+    changes_tracking = flag;
+    if (!flag) {
+        block_changes.clear();
+    }
+}
+
+void blocks_agent::note_change(int32_t x, int32_t y, int32_t z) {
+    if (changes_tracking) {
+        block_changes.emplace_back(x, y, z);
+    }
+}
+
+std::vector<glm::ivec3> blocks_agent::take_changes() {
+    return std::exchange(block_changes, {});
 }
 
 static uint8_t get_events_bits(const Block& def) {
@@ -148,6 +169,7 @@ static void initialize_block(
     vox.id = id;
     vox.state = state;
     chunk.setModifiedAndUnsaved();
+    note_change(x, y, z);
     if (!state.segment && def.rt.extended) {
         restore_segments(chunks, def, state, x, y, z);
     }
