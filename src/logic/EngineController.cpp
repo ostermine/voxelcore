@@ -32,18 +32,20 @@ static debug::Logger logger("engine-control");
 
 EngineController::EngineController(Engine& engine) : engine(engine) {}
 
-void EngineController::deleteWorld(const std::string& name) {
+void EngineController::deleteWorld(const std::string& name, bool confirm) {
     io::path folder = engine.getPaths().getWorldFolderByName(name);
+    confirm = confirm && !engine.isHeadless();
 
-    auto deletion = [this, folder]() {
+    auto deletion = [this, folder, confirm]() {
         logger.info() << "deleting " << folder.string();
         io::remove_all(folder);
-        if (!engine.isHeadless()) {
+        if (confirm) {
+            // closes the confirmation dialog
             engine.getGUI().getMenu()->back();
         }
     };
 
-    if (engine.isHeadless()) {
+    if (!confirm) {
         deletion();
         return;
     }
