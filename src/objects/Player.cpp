@@ -187,6 +187,14 @@ void Player::setSuspended(bool flag) {
     suspended = flag;
 }
 
+bool Player::isTransient() const {
+    return transient;
+}
+
+void Player::setTransient(bool flag) {
+    transient = flag;
+}
+
 bool Player::isFlight() const {
     return flight;
 }
