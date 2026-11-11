@@ -13,6 +13,7 @@
 #include "voxels/Block.hpp"
 #include "voxels/Chunk.hpp"
 #include "voxels/Chunks.hpp"
+#include "voxels/compressed_chunks.hpp"
 #include "voxels/GlobalChunks.hpp"
 #include "world/Level.hpp"
 #include "world/LevelEvents.hpp"
@@ -21,6 +22,10 @@
 
 const uint MAX_WORK_PER_FRAME = 128;
 const uint MIN_SURROUNDING = 9;
+
+static int64_t chunk_key(int x, int z) {
+    return (static_cast<int64_t>(x) << 32) | static_cast<uint32_t>(z);
+}
 
 ChunksController::ChunksController(Level& level)
     : level(level),
@@ -45,7 +50,9 @@ int64_t ChunksController::update(
 
     if (player.isLoadingChunks()) {
         /// FIXME: one generator for multiple players
-        generator->update(centerX, centerY, loadDistance);
+        if (isGenerationEnabled()) {
+            generator->update(centerX, centerY, loadDistance);
+        }
     } else {
         return 0;
     }
@@ -81,10 +88,20 @@ bool ChunksController::isInLoadingZone(
     return distance < minDistance;
 }
 
+bool ChunksController::isGenerationEnabled() const {
+    return level.getWorld().getInfo().getLogicFlag("generation", true);
+}
+
+void ChunksController::putChunkData(int x, int z, std::vector<ubyte> data) {
+    chunksData[chunk_key(x, z)] = std::move(data);
+}
+
 bool ChunksController::loadVisible(
     const Player& player, uint padding, bool isLocalPlayer
 ) const {
     auto& chunks = *player.chunks;
+    // without generation only chunks with data are loaded
+    bool generation = isGenerationEnabled();
     int sizeX = chunks.getWidth();
     int sizeY = chunks.getHeight();
 
@@ -126,7 +143,10 @@ bool ChunksController::loadVisible(
                 continue;
             }
 
-            if (distance < minDistance) {
+            if (distance < minDistance &&
+                (generation || chunksData.count(chunk_key(
+                    x + chunks.getOffsetX(), z + chunks.getOffsetY()
+                )))) {
                 minDistance = distance;
                 nearX = x;
                 nearZ = z;
@@ -179,7 +199,22 @@ void ChunksController::createChunk(const Player& player, int x, int z) const {
     auto chunk = level.chunks->create(x, z, lighting != nullptr);
     player.chunks->putChunk(chunk);
     auto& chunkFlags = chunk->flags;
-    if (!chunkFlags.loaded) {
+    auto data = chunksData.find(chunk_key(x, z));
+    if (data != chunksData.end()) {
+        compressed_chunks::decode(
+            *chunk,
+            data->second.data(),
+            data->second.size(),
+            *level.content.getIndices()
+        );
+        chunksData.erase(data);
+        // a loaded chunk to the CHUNK_PRESENT listeners: no decorations
+        chunkFlags.loaded = true;
+        chunkFlags.loadedLights = false;
+        if (chunk->lightmap) {
+            chunk->lightmap->clear();
+        }
+    } else if (!chunkFlags.loaded) {
         generator->generate(chunk->voxels, x, z);
         chunkFlags.unsaved = true;
     }
