@@ -16,6 +16,7 @@
 #include "objects/Entity.hpp"
 #include "objects/Player.hpp"
 #include "objects/Players.hpp"
+#include "physics/Hitbox.hpp"
 #include "physics/PhysicsSolver.hpp"
 #include "world/Level.hpp"
 
@@ -26,6 +27,12 @@ using namespace netgame::replication::detail;
 static debug::Logger logger("netgame-replication");
 
 namespace {
+    /// A position in the world, in the type entities keep it in: float in
+    /// upstream, double with the far lands fix (fork branch fix/far-lands).
+    /// The local player's positions keep it; the wire format and the
+    /// smoothing of remote players stay in float (exact to ~1/128 block up
+    /// to 131072 blocks from the origin, the records to +-8.4M blocks)
+    using position_t = std::remove_cv_t<decltype(Hitbox::position)>;
     constexpr uint8_t T_MOVE = 1;
     constexpr uint8_t T_INPUT = 2;
     constexpr uint8_t T_SNAPSHOT = 5;
@@ -99,7 +106,7 @@ namespace {
     struct Predicted {
         uint32_t seq;
         /// where the player was after the command
-        glm::vec3 position;
+        position_t position;
     };
     bool localAuthority = false;
     /// the player is where the server has it (the ack of command 0): from
@@ -108,7 +115,7 @@ namespace {
     /// the ack of command 0 came: the player takes the state at the end of
     /// this frame, when core:player has applied the server's flight
     bool startPending = false;
-    glm::vec3 startPosition {};
+    position_t startPosition {};
     glm::vec3 startVelocity {};
     uint32_t inputSeq = 0;
     uint32_t lastAck = 0;
@@ -373,7 +380,8 @@ namespace {
         Reader reader {data};
         reader.u8();
         uint32_t seq = reader.u32();
-        glm::vec3 position, velocity;
+        position_t position;
+        glm::vec3 velocity;
         position.x = reader.f32();
         position.y = reader.f32();
         position.z = reader.f32();
@@ -417,7 +425,7 @@ namespace {
         if (history.empty() || history.front().seq != seq) {
             return;
         }
-        glm::vec3 error = position - history.front().position;
+        glm::vec3 error(position - history.front().position);
         history.pop_front();
         float length = glm::length(error);
         if (!(length > config.correctionMin)) {
@@ -425,7 +433,7 @@ namespace {
         }
         // the later commands were made from the wrong place too
         for (auto& predicted : history) {
-            predicted.position += error;
+            predicted.position += position_t(error);
         }
         stats.corrections++;
         stats.correctionMax = std::max(stats.correctionMax, length);
@@ -436,7 +444,7 @@ namespace {
         auto entity = entity_of(level, *player);
         if (length > config.correctionSnap && entity) {
             auto& hitbox = entity->getRigidbody().hitbox;
-            player->teleport(hitbox.position + correction + error);
+            player->teleport(hitbox.position + position_t(correction + error));
             hitbox.velocity = velocity;
             correction = {};
             stats.snaps++;
@@ -587,7 +595,7 @@ namespace {
         auto timeMs = static_cast<uint32_t>((now_seconds() - serverStart) * 1000.0);
         struct State {
             int64_t pid;
-            glm::vec3 position;
+            position_t position;
             uint32_t version;
             std::string record;
         };
@@ -605,7 +613,7 @@ namespace {
                 subject->second.version == 0) {
                 continue;
             }
-            glm::vec3 position = player->getPosition();
+            position_t position = player->getPosition();
             uint8_t flags = subject->second.flags;
             if (subject->second.authority) {
                 // moved this tick, the player catches up on the next frame
@@ -620,7 +628,8 @@ namespace {
                 state.record,
                 Record {
                     static_cast<uint16_t>(peer.pid),
-                    position,
+                    // the wire format is float (records: 1/256 of a block)
+                    glm::vec3(position),
                     rotation.x,
                     rotation.y,
                     flags
@@ -633,7 +642,7 @@ namespace {
             if (recipient == nullptr) {
                 continue;
             }
-            glm::vec3 origin = recipient->getPosition();
+            position_t origin = recipient->getPosition();
             std::string message;
             int count = 0;
             auto send = [&, conn = conn]() {
@@ -909,7 +918,7 @@ void replication::record_input(Level& level, int64_t pid, int keys, float delta)
     if (correction != glm::vec3(0.0f)) {
         glm::vec3 part = correction - fade(correction, delta, config.correctionSmoothing);
         correction -= part;
-        player->teleport(hitbox.position + part);
+        player->teleport(hitbox.position + position_t(part));
     }
     auto rotation = player->getRotation();
     Command cmd {
@@ -925,7 +934,7 @@ void replication::record_input(Level& level, int64_t pid, int keys, float delta)
     if (unacked.size() > MAX_COMMANDS) {
         unacked.pop_front();
     }
-    history.push_back({cmd.seq, hitbox.position + correction});
+    history.push_back({cmd.seq, hitbox.position + position_t(correction)});
     if (history.size() > MAX_HISTORY) {
         history.pop_front();
     }
