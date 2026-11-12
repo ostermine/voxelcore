@@ -100,11 +100,12 @@ void LevelController::update(float delta, bool pause) {
     if (!pause) {
         blocks->update(delta, settings.chunks.padding.get());
         level->entities->update(delta);
+        int parts = playerTickClock.update(delta);
         for (const auto& [_, player] : *level->players) {
             if (player->isSuspended()) {
                 continue;
             }
-            if (int parts = playerTickClock.update(delta)) {
+            if (parts) {
                 for (int i = 0; i < parts; i++) {
                     if (player->getId() % playerTickClock.getParts() !=
                         playerTickClock.convertPart(i)) {
