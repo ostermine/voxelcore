@@ -1,4 +1,12 @@
 cmake_minimum_required(VERSION 3.5)
+
+# Game transport (GameNetworkingSockets), Lua library `netgame`.
+# Must be set before project() to enable the vcpkg manifest feature.
+option(VOXELENGINE_NETGAME "Build netgame transport" OFF)
+if(VOXELENGINE_NETGAME)
+    list(APPEND VCPKG_MANIFEST_FEATURES "netgame")
+endif()
+
 project(VoxelCore)
 
 set(CMAKE_CXX_STANDARD 17)
