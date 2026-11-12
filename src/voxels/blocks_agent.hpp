@@ -35,6 +35,17 @@ struct BlockRegisterEvent {
 
 std::vector<BlockRegisterEvent> pull_register_events();
 
+/// @brief Collect the positions of changed blocks (id or states): what a
+/// network game server sends to its clients. Off by default.
+void set_changes_tracking(bool flag);
+
+/// @brief Note a changed block, if tracking is on
+void note_change(int32_t x, int32_t y, int32_t z);
+
+/// @brief Positions of the blocks changed since the previous call, with
+/// repeats; block fields are not tracked
+std::vector<glm::ivec3> take_changes();
+
 void on_chunk_present(const ContentIndices& indices, const Chunk& chunk);
 void on_chunk_remove(const ContentIndices& indices, const Chunk& chunk);
 
@@ -369,6 +380,7 @@ inline void set_rotation_extended(
                     auto chunk = get_chunk(chunks, cx, cz);
                     assert(chunk != nullptr);
                     chunk->setModifiedAndUnsaved();
+                    note_change(pos.x, pos.y, pos.z);
                     segmentBlocks.emplace_back(pos);
                 }
             }
@@ -425,6 +437,7 @@ inline void set_rotation(
         auto chunk = get_chunk(chunks, cx, cz);
         assert(chunk != nullptr);
         chunk->setModifiedAndUnsaved();
+        note_change(x, y, z);
     }
 }
 
