@@ -83,6 +83,11 @@ function go(dir, speed_multiplier, sprint, crouch, vel, delta)
 end
 
 local headIndex = rig:index("head")
+-- where the head looks, in the world: the bone matrix is relative to the
+-- body, so taking the direction back out of it after the body has turned
+-- turned the head together with the body (on each step of the body the
+-- head jumped past the view and came back)
+local head_dir = nil
 
 function look_at(point, change_dir)
     local pos = tsf:get_pos()
@@ -100,13 +105,22 @@ function look_at(point, change_dir)
         return
     end
 
-    local headrot = mat4.idt()
-    local curdir = mat4.mul(mat4.mul(tsf:get_rot(),
-        rig:get_matrix(headIndex)), {0, 0, -1})
+    if not head_dir then
+        head_dir = mat4.mul(mat4.mul(tsf:get_rot(),
+            rig:get_matrix(headIndex)), {0, 0, -1})
+    end
+    -- 20% of the way per frame at 60 FPS, the same part of the way per
+    -- second at any FPS
+    local k = 1.0 - 0.8 ^ (time.delta() * 60)
+    vec3.mix(head_dir, viewdir, k, head_dir)
+    if vec3.length(head_dir) < 1e-3 then
+        -- the view turned right around: no direction in between
+        head_dir = {viewdir[1], viewdir[2], viewdir[3]}
+    else
+        vec3.normalize(head_dir, head_dir)
+    end
 
-    vec3.mix(curdir, viewdir, 0.2, viewdir)
-
-    headrot = mat4.inverse(mat4.look_at({0,0,0}, viewdir, {0, 1, 0}))
+    local headrot = mat4.inverse(mat4.look_at({0,0,0}, head_dir, {0, 1, 0}))
     headrot = mat4.mul(mat4.inverse(tsf:get_rot()), headrot)
     rig:set_matrix(headIndex, headrot)
 end
