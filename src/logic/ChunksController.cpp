@@ -32,7 +32,7 @@ ChunksController::ChunksController(Level& level)
 
 ChunksController::~ChunksController() = default;
 
-void ChunksController::update(
+int64_t ChunksController::update(
     int64_t maxDuration,
     int loadDistance,
     uint padding,
@@ -42,12 +42,12 @@ void ChunksController::update(
     const auto& position = player.getPosition();
     int centerX = floordiv<CHUNK_W>(glm::floor(position.x));
     int centerY = floordiv<CHUNK_D>(glm::floor(position.z));
-    
+
     if (player.isLoadingChunks()) {
         /// FIXME: one generator for multiple players
         generator->update(centerX, centerY, loadDistance);
     } else {
-        return;
+        return 0;
     }
 
     int64_t mcstotal = 0;
@@ -55,14 +55,14 @@ void ChunksController::update(
     for (uint i = 0; i < MAX_WORK_PER_FRAME; i++) {
         timeutil::Timer timer;
         if (loadVisible(player, padding, isLocalPlayer)) {
-            int64_t mcs = timer.stop();
-            if (mcstotal + mcs < maxDuration * 1000) {
-                mcstotal += mcs;
+            mcstotal += timer.stop();
+            if (mcstotal < maxDuration) {
                 continue;
             }
         }
         break;
     }
+    return mcstotal;
 }
 
 bool ChunksController::isInLoadingZone(
