@@ -94,7 +94,12 @@ app.new_world(
 )
 
 -- Удаляет мир по названию.
-app.delete_world(name: string)
+-- При окне игры сначала спрашивает подтверждение у пользователя.
+app.delete_world(
+    name: string,
+    -- удалить без вопроса
+    [опционально] force: boolean = false
+)
 
 -- Открывает мир по названию.
 app.open_world(name: string)
