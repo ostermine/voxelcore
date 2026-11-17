@@ -151,6 +151,9 @@ namespace scripting {
     void on_entity_player_set(const Entity& entity, int64_t pid);
     void on_entities_update(int tps, int parts, int part);
     void on_entities_physics_update(float delta);
+    /// on_physics_update of one entity's components (netgame: a player
+    /// moved by its client's commands, each with its own time)
+    void on_entity_physics_update(const Entity& entity, float delta);
     void on_entities_render(float delta);
     void on_sensor_enter(const Entity& entity, size_t index, entityid_t oid);
     void on_sensor_exit(const Entity& entity, size_t index, entityid_t oid);

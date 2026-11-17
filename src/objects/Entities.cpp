@@ -13,6 +13,8 @@
 #include "maths/rays.hpp"
 #include "maths/util.hpp"
 #include "physics/PhysicsSolver.hpp"
+#include "Player.hpp"
+#include "Players.hpp"
 #include "world/Level.hpp"
 
 #include <glm/ext/matrix_transform.hpp>
@@ -223,6 +225,13 @@ dv::value Entities::serialize(const std::vector<Entity*>& entities) {
         const EntityId& eid = entity->getID();
         if (!entity->getDef().save.enabled || eid.destroyFlag) {
             continue;
+        }
+        // the body of a player that is not saved
+        if (eid.player != -1) {
+            auto player = level.players->get(eid.player);
+            if (player && player->isTransient()) {
+                continue;
+            }
         }
         level.entities->onSave(*entity);
         if (!eid.destroyFlag) {

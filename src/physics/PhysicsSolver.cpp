@@ -11,6 +11,26 @@
 
 static debug::Logger logger("physics-solver");
 
+static void apply_damping(Hitbox& hitbox, float delta) {
+    float linearDamping = hitbox.linearDamping;
+
+    if (hitbox.grounded) {
+        linearDamping = 10.0f; // TODO: add friction to material
+    }
+
+    glm::vec3& vel = hitbox.velocity;
+    auto diff = hitbox.groundVelocity - vel;
+    vel.x += diff.x * delta * linearDamping;
+    vel.z += diff.z * delta * linearDamping;
+
+    if (hitbox.verticalDamping > 0.0f) {
+        vel.y /= 1.0f + delta * linearDamping * hitbox.verticalDamping;
+    }
+    if (!hitbox.grounded) {
+        hitbox.groundVelocity *= 1.0f - delta;
+    }
+}
+
 PhysicsSolver::PhysicsSolver(const GlobalChunks& chunks, glm::vec3 gravity)
     : chunks(chunks),
       gravity(gravity),
@@ -68,26 +88,45 @@ void PhysicsSolver::step(
     }
 
     for (auto hitbox : hitboxes) {
-        float linearDamping = hitbox->linearDamping;
-
-        if (hitbox->grounded) {
-            linearDamping = 10.0f; // TODO: add friction to material
-        }
-
-        glm::vec3& vel = hitbox->velocity;
-        auto diff = hitbox->groundVelocity - vel;
-        vel.x += diff.x * delta * linearDamping;
-        vel.z += diff.z * delta * linearDamping;
-
-        if (hitbox->verticalDamping > 0.0f) {
-            vel.y /= 1.0f + delta * linearDamping * hitbox->verticalDamping;
-        }
-        if (!hitbox->grounded) {
-            hitbox->groundVelocity *= 1.0f - delta;
-        }
-
+        apply_damping(*hitbox, delta);
         physics::update_sensors(*hitbox, sensors);
     }
+}
+
+void PhysicsSolver::stepOne(Hitbox& hitbox, float delta, uint substeps) {
+    static const std::vector<Hitbox*> noSolids;
+
+    hitbox.groundMaterial.clear();
+    hitbox.prevGrounded = hitbox.grounded;
+    hitbox.grounded = false;
+    hitbox.prevVelocity = hitbox.velocity;
+
+    // the same as a body of step() without solid entities around
+    float dt = delta / static_cast<float>(substeps);
+    physics::schedule_substep(hitbox, gravity, 0, substeps, dt);
+    for (uint i = 0; i < substeps; i++) {
+        if (hitbox.nextSubstep > i) {
+            continue;
+        }
+        hitbox.prevPosition = hitbox.position;
+        hitbox.substepTime = dt * static_cast<float>(i + 1 - hitbox.doneSubsteps);
+        while (hitbox.doneSubsteps <= i) {
+            uint left = i + 1 - hitbox.doneSubsteps;
+            uint skip =
+                physics::calc_substep_stride(hitbox, gravity, dt, left) - 1;
+            if (skip > 0) {
+                physics::integrate(hitbox, gravity, dt, skip);
+                hitbox.doneSubsteps += skip;
+            }
+            physics::calc_substep(
+                hitbox, {chunks, noSolids, gravity, dt, i + 1}
+            );
+            hitbox.doneSubsteps++;
+        }
+        physics::schedule_substep(hitbox, gravity, i + 1, substeps, dt);
+    }
+    apply_damping(hitbox, delta);
+    physics::update_sensors(hitbox, sensors);
 }
 
 void PhysicsSolver::removeSensor(Sensor* sensor) {
