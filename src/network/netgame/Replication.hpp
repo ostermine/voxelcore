@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include <glm/gtc/quaternion.hpp>
 #include <glm/vec3.hpp>
 
 #include "NetGame.hpp"
@@ -43,6 +44,20 @@ class Level;
 /// by the difference from the server (prediction and reconciliation).
 /// keys: 1 forward, 2 back, 4 left, 8 right, 16 jump, 32 sprint,
 /// 64 crouch, 128 cheat.
+///
+/// Entities (mobs, dropped items): the server sends a connection the
+/// transforms of the entities bound to it (bind_entity; the game scripts
+/// decide which and send their spawn and despawn), less often for farther
+/// ones, a changed one when it changed and an unchanged one again every
+/// entityResend seconds (a lost record would leave it in the wrong place).
+/// The client places its puppets of them from a buffer of snapshots, as
+/// remote players: static bodies with the velocity and the ground flag of
+/// the server for the animations, on_grounded/on_fall of their components
+/// when the flag changes.
+///   entities, server to client: u8 7, u32 server time (ms), u16 count,
+///     then count times u32 uid (the server's), i32 x, y, z (1/256 block),
+///     i16 qx, qy, qz, qw (rotation, 1/32767), u8 flags
+/// flags: 2 - on the ground.
 namespace netgame::replication {
     struct Tier {
         /// players nearer than this (blocks) ...
@@ -82,6 +97,10 @@ namespace netgame::replication {
         double correctionSmoothing = 0.05;
         /// ... and a difference longer than this (blocks) is fixed at once
         float correctionSnap = 2.0f;
+
+        /// server: an entity that did not change is sent again after this
+        /// many seconds
+        double entityResend = 1.0;
     };
 
     struct Stats {
@@ -107,6 +126,10 @@ namespace netgame::replication {
         int64_t corrections = 0;
         int64_t snaps = 0;
         float correctionMax = 0.0f;
+
+        /// entities: records sent (server), snapshots received (client)
+        int64_t entityRecords = 0;
+        int64_t entitySnapshotsReceived = 0;
     };
 
     void configure(const Config& config);
@@ -139,6 +162,14 @@ namespace netgame::replication {
     /// Client: snapshots of the server player move the local remote player
     void add_remote(uint32_t serverPid, int64_t localPid);
     void remove_remote(uint32_t serverPid);
+
+    /// Server: the connection gets the transforms of the entity
+    void bind_entity(ConnectionId connection, uint64_t uid);
+    void unbind_entity(ConnectionId connection, uint64_t uid);
+
+    /// Client: snapshots of the server entity move the local puppet
+    void add_remote_entity(uint32_t serverUid, uint64_t localUid);
+    void remove_remote_entity(uint32_t serverUid);
 
     void unbind(ConnectionId connection);
     void reset();
@@ -205,6 +236,45 @@ namespace netgame::replication::detail {
 
     /// What is left of a jump after dt seconds
     glm::vec3 fade(const glm::vec3& jump, double dt, double halfLife);
+
+    constexpr size_t ENTITY_RECORD_SIZE = 25;
+
+    struct EntityRecord {
+        uint32_t uid;
+        glm::vec3 position;
+        glm::quat rotation;
+        uint8_t flags;
+    };
+
+    void write_entity_record(std::string& out, const EntityRecord& record);
+
+    /// false if the data ends before the record
+    bool read_entity_record(
+        const std::vector<uint8_t>& data, size_t offset, EntityRecord& record
+    );
+
+    struct EntitySample {
+        /// server time, seconds
+        double time;
+        glm::vec3 position;
+        glm::quat rotation;
+        uint8_t flags;
+    };
+
+    struct EntityPose {
+        glm::vec3 position;
+        /// blocks per second
+        glm::vec3 velocity;
+        glm::quat rotation;
+        uint8_t flags;
+    };
+
+    /// As sample_at: interpolated between two samples, extrapolated past
+    /// the last one at most maxExtrapolation seconds (the rotation stays).
+    /// samples are not empty and go in time order
+    EntityPose entity_sample_at(
+        const std::deque<EntitySample>& samples, double time, double maxExtrapolation
+    );
 
     constexpr uint8_t KEY_CHEAT = 128;
     constexpr size_t COMMAND_SIZE = 14;

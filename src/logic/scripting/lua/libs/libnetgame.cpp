@@ -316,6 +316,26 @@ static int l_remove_remote(lua::State* L) {
     return 0;
 }
 
+static int l_replicate_entity(lua::State* L) {
+    netgame::replication::bind_entity(lua::tointeger(L, 1), lua::tointeger(L, 2));
+    return 0;
+}
+
+static int l_unreplicate_entity(lua::State* L) {
+    netgame::replication::unbind_entity(lua::tointeger(L, 1), lua::tointeger(L, 2));
+    return 0;
+}
+
+static int l_add_remote_entity(lua::State* L) {
+    netgame::replication::add_remote_entity(lua::tointeger(L, 1), lua::tointeger(L, 2));
+    return 0;
+}
+
+static int l_remove_remote_entity(lua::State* L) {
+    netgame::replication::remove_remote_entity(lua::tointeger(L, 1));
+    return 0;
+}
+
 static int l_replication_tick(lua::State* L) {
     netgame::replication::tick(require_level());
     return 0;
@@ -361,6 +381,10 @@ static int l_replication_stats(lua::State* L) {
     lua::setfield(L, "snaps");
     lua::pushnumber(L, stats.correctionMax);
     lua::setfield(L, "correction_max");
+    lua::pushinteger(L, stats.entityRecords);
+    lua::setfield(L, "entity_records");
+    lua::pushinteger(L, stats.entitySnapshotsReceived);
+    lua::setfield(L, "entity_snapshots");
     return 1;
 }
 
@@ -411,6 +435,10 @@ static int l_configure_replication(lua::State* L) {
             config.snapDistance = lua::tonumber(L, -1);
             lua::pop(L);
         }
+        if (lua::getfield(L, "entity_resend", 1)) {
+            config.entityResend = lua::tonumber(L, -1);
+            lua::pop(L);
+        }
         if (lua::getfield(L, "tiers", 1)) {
             config.tiers.clear();
             int count = lua::objlen(L, -1);
@@ -450,6 +478,10 @@ const luaL_Reg netgamelib[] = {
     {"unreplicate", lua::wrap<l_unreplicate>},
     {"add_remote", lua::wrap<l_add_remote>},
     {"remove_remote", lua::wrap<l_remove_remote>},
+    {"replicate_entity", lua::wrap<l_replicate_entity>},
+    {"unreplicate_entity", lua::wrap<l_unreplicate_entity>},
+    {"add_remote_entity", lua::wrap<l_add_remote_entity>},
+    {"remove_remote_entity", lua::wrap<l_remove_remote_entity>},
     {"replication_tick", lua::wrap<l_replication_tick>},
     {"replication_frame", lua::wrap<l_replication_frame>},
     {"replication_stats", lua::wrap<l_replication_stats>},

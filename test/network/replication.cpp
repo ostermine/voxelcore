@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <deque>
 #include <string>
@@ -182,6 +183,75 @@ TEST(netgame_replication, jump_fades) {
     EXPECT_NEAR(fade(jump, 0.32, 0.08).z, -0.125f, 1e-4f);
     EXPECT_EQ(fade(jump, 0.0, 0.08), jump);
     EXPECT_EQ(fade(jump, 0.1, 0.0), glm::vec3(0.0f));
+}
+
+/// Angle in degrees between two rotations (acos near 1: ~0.04 degrees of
+/// float noise for the same rotation)
+static float rotation_angle(const glm::quat& a, const glm::quat& b) {
+    float dot = std::min(1.0f, std::abs(glm::dot(a, b)));
+    return glm::degrees(2.0f * std::acos(dot));
+}
+
+TEST(netgame_replication, entity_record_round_trip) {
+    glm::quat rotation = glm::angleAxis(glm::radians(123.0f), glm::vec3(0, 1, 0)) *
+                         glm::angleAxis(glm::radians(-20.0f), glm::vec3(1, 0, 0));
+    std::string out;
+    write_entity_record(
+        out, EntityRecord {4000000123u, {-12.3f, 70.5f, 1000.01f}, rotation, FLAG_GROUNDED}
+    );
+    ASSERT_EQ(out.size(), ENTITY_RECORD_SIZE);
+
+    EntityRecord record;
+    ASSERT_TRUE(read_entity_record(bytes_of(out), 0, record));
+    EXPECT_EQ(record.uid, 4000000123u);
+    EXPECT_NEAR(record.position.x, -12.3f, 1.0f / 512);
+    EXPECT_NEAR(record.position.y, 70.5f, 1.0f / 512);
+    EXPECT_NEAR(record.position.z, 1000.01f, 1.0f / 512);
+    EXPECT_LT(rotation_angle(record.rotation, rotation), 0.1f);
+    EXPECT_EQ(record.flags, FLAG_GROUNDED);
+
+    auto data = bytes_of(out);
+    data.pop_back();
+    EXPECT_FALSE(read_entity_record(data, 0, record));
+}
+
+TEST(netgame_replication, entity_record_same_rotation_same_bytes) {
+    // q and -q are the same rotation: an unchanged entity must not look
+    // changed to the server
+    glm::quat q = glm::angleAxis(glm::radians(200.0f), glm::vec3(0, 1, 0));
+    std::string a, b;
+    write_entity_record(a, EntityRecord {7, {1, 2, 3}, q, 0});
+    write_entity_record(b, EntityRecord {7, {1, 2, 3}, -q, 0});
+    EXPECT_EQ(a, b);
+}
+
+TEST(netgame_replication, entity_sample_interpolates_and_extrapolates) {
+    glm::quat from(1, 0, 0, 0);
+    glm::quat to = glm::angleAxis(glm::radians(90.0f), glm::vec3(0, 1, 0));
+    std::deque<EntitySample> samples {
+        EntitySample {1.0, {0, 0, 0}, from, 0},
+        EntitySample {1.125, {1, 0, 2}, to, FLAG_GROUNDED},
+    };
+    EntityPose mid = entity_sample_at(samples, 1.0625, 0.25);
+    EXPECT_NEAR(mid.position.x, 0.5f, 1e-4f);
+    EXPECT_NEAR(mid.position.z, 1.0f, 1e-4f);
+    EXPECT_NEAR(mid.velocity.x, 8.0f, 1e-3f);
+    EXPECT_NEAR(mid.velocity.z, 16.0f, 1e-3f);
+    EXPECT_NEAR(rotation_angle(mid.rotation, from), 45.0f, 0.1f);
+    EXPECT_EQ(mid.flags, FLAG_GROUNDED);
+
+    EntityPose ahead = entity_sample_at(samples, 1.225, 0.25);
+    EXPECT_NEAR(ahead.position.x, 1.8f, 1e-3f);
+    EXPECT_NEAR(ahead.velocity.z, 16.0f, 1e-3f);
+    EXPECT_LT(rotation_angle(ahead.rotation, to), 0.1f);
+
+    // past the extrapolation limit: still, no velocity for the animations
+    EntityPose late = entity_sample_at(samples, 3.0, 0.25);
+    EXPECT_NEAR(late.position.x, 3.0f, 1e-3f);
+    EXPECT_EQ(late.velocity, glm::vec3(0.0f));
+
+    EntityPose before = entity_sample_at(samples, 0.5, 0.25);
+    EXPECT_EQ(before.position, glm::vec3(0.0f));
 }
 
 #endif

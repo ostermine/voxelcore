@@ -37,10 +37,16 @@ namespace {
     constexpr uint8_t T_INPUT = 2;
     constexpr uint8_t T_SNAPSHOT = 5;
     constexpr uint8_t T_ACK = 6;
+    constexpr uint8_t T_ENTITIES = 7;
     constexpr uint8_t FLAG_FLIGHT = 4;
     constexpr uint8_t FLAG_NOCLIP = 8;
     /// 7 + 60 * 19 bytes fits one UDP packet
     constexpr int MAX_RECORDS = 60;
+    /// 7 + 46 * 25 bytes
+    constexpr int MAX_ENTITY_RECORDS = 46;
+    /// server: states of entities no connection has had for this many
+    /// ticks are forgotten
+    constexpr uint32_t ENTITY_STATE_TTL = 100;
     constexpr size_t MAX_SAMPLES = 32;
     /// server: commands waiting per player (a second at 256 FPS)
     constexpr size_t MAX_QUEUE = 256;
@@ -77,6 +83,26 @@ namespace {
     };
     std::unordered_map<ConnectionId, ServerPeer> peers;
     std::unordered_map<int64_t, Subject> subjects;
+
+    // server, entities
+    struct PeerEntity {
+        /// version of the state last sent, 0 - none yet
+        uint32_t version = 0;
+        double sentAt = -1.0;
+    };
+    struct EntityState {
+        /// grows when the record changes
+        uint32_t version = 0;
+        /// the record after the uid, to see a change
+        std::string record;
+        glm::vec3 position {};
+        /// the server tick it was read on, 0 - never
+        uint32_t tick = 0;
+        bool exists = false;
+    };
+    /// connection -> uid -> what it has got
+    std::unordered_map<ConnectionId, std::unordered_map<entityid_t, PeerEntity>> peerEntities;
+    std::unordered_map<entityid_t, EntityState> entityStates;
     uint32_t serverTick = 0;
     /// snapshots carry real time, not ticks: a server falling behind its
     /// tick rate would make remote players jump
@@ -97,6 +123,13 @@ namespace {
     int64_t localPid = -1;
     uint32_t moveSeq = 0;
     std::unordered_map<uint32_t, Remote> remotes;
+    struct RemoteEntity {
+        entityid_t localUid;
+        std::deque<EntitySample> samples;
+        /// the ground flag the puppet was given, -1 - not placed yet
+        int grounded = -1;
+    };
+    std::unordered_map<uint32_t, RemoteEntity> remoteEntities;
     bool clockSet = false;
     /// server time minus local time, seconds
     double serverOffset = 0.0;
@@ -516,6 +549,91 @@ namespace {
         return now + serverOffset - config.interpolationDelay;
     }
 
+    /// Where the remote players are shown, to glide from there if new
+    /// samples or the clock move them (glide_remotes)
+    void anchor_remotes(double now) {
+        if (!clockSet) {
+            return;
+        }
+        double before = render_time(now);
+        for (auto& [_, remote] : remotes) {
+            remote.anchored = remote.shown && !remote.samples.empty();
+            if (remote.anchored) {
+                remote.anchor = sample_at(
+                    remote.samples, before, config.maxExtrapolation
+                ).position;
+            }
+        }
+    }
+
+    /// The server clock from a snapshot of either kind
+    void update_clock(double serverTime, double now) {
+        double offset = serverTime - now;
+        if (!clockSet || std::abs(offset - serverOffset) > 0.5) {
+            serverOffset = offset;
+            clockSet = true;
+        } else {
+            serverOffset += (offset - serverOffset) * 0.05;
+        }
+    }
+
+    void glide_remotes(double now) {
+        double after = render_time(now);
+        for (auto& [_, remote] : remotes) {
+            if (!remote.anchored) {
+                continue;
+            }
+            remote.anchored = false;
+            glm::vec3 jump = remote.anchor - sample_at(
+                remote.samples, after, config.maxExtrapolation
+            ).position;
+            if (glm::length(jump) < config.glideMin) {
+                continue;
+            }
+            remote.jump += jump;
+            if (glm::length(remote.jump) > config.snapDistance) {
+                remote.jump = {};
+            }
+        }
+    }
+
+    void read_entities(const std::vector<uint8_t>& data) {
+        Reader reader {data};
+        reader.u8();
+        uint32_t timeMs = reader.u32();
+        uint16_t count = reader.u16();
+        if (!reader.ok) {
+            return;
+        }
+        double now = now_seconds();
+        double serverTime = timeMs / 1000.0;
+        anchor_remotes(now);
+        update_clock(serverTime, now);
+        size_t pos = reader.pos;
+        for (int i = 0; i < count; i++, pos += ENTITY_RECORD_SIZE) {
+            EntityRecord record;
+            if (!read_entity_record(data, pos, record)) {
+                break;
+            }
+            auto found = remoteEntities.find(record.uid);
+            if (found == remoteEntities.end()) {
+                continue;
+            }
+            auto& samples = found->second.samples;
+            if (!samples.empty() && serverTime <= samples.back().time) {
+                continue;
+            }
+            samples.push_back(EntitySample {
+                serverTime, record.position, record.rotation, record.flags
+            });
+            if (samples.size() > MAX_SAMPLES) {
+                samples.pop_front();
+            }
+        }
+        glide_remotes(now);
+        stats.entitySnapshotsReceived++;
+    }
+
     void read_snapshot(const std::vector<uint8_t>& data) {
         Reader reader {data};
         reader.u8();
@@ -525,27 +643,9 @@ namespace {
             return;
         }
         double now = now_seconds();
-        // where the remote players are shown, to glide from there if the new
-        // samples or the clock move them
-        if (clockSet) {
-            double before = render_time(now);
-            for (auto& [_, remote] : remotes) {
-                remote.anchored = remote.shown && !remote.samples.empty();
-                if (remote.anchored) {
-                    remote.anchor = sample_at(
-                        remote.samples, before, config.maxExtrapolation
-                    ).position;
-                }
-            }
-        }
         double serverTime = timeMs / 1000.0;
-        double offset = serverTime - now;
-        if (!clockSet || std::abs(offset - serverOffset) > 0.5) {
-            serverOffset = offset;
-            clockSet = true;
-        } else {
-            serverOffset += (offset - serverOffset) * 0.05;
-        }
+        anchor_remotes(now);
+        update_clock(serverTime, now);
         size_t pos = reader.pos;
         for (int i = 0; i < count; i++, pos += RECORD_SIZE) {
             Record record;
@@ -567,24 +667,135 @@ namespace {
                 samples.pop_front();
             }
         }
-        double after = render_time(now);
-        for (auto& [_, remote] : remotes) {
-            if (!remote.anchored) {
+        glide_remotes(now);
+        stats.snapshotsReceived++;
+    }
+
+    /// Server: the state of a bound entity this tick, read once per tick
+    const EntityState& entity_state(Level& level, entityid_t uid) {
+        auto& state = entityStates[uid];
+        if (state.tick == serverTick) {
+            return state;
+        }
+        state.tick = serverTick;
+        auto entity = level.entities->get(uid);
+        state.exists = entity != nullptr;
+        if (entity == nullptr) {
+            return state;
+        }
+        const auto& transform = entity->getTransform();
+        const auto& hitbox = entity->getRigidbody().hitbox;
+        // the wire format is float (records: 1/256 of a block)
+        glm::vec3 position(transform.pos);
+        std::string record;
+        write_entity_record(
+            record,
+            EntityRecord {
+                static_cast<uint32_t>(uid),
+                position,
+                glm::quat_cast(transform.rot),
+                static_cast<uint8_t>(hitbox.grounded ? FLAG_GROUNDED : 0)
+            }
+        );
+        record.erase(0, 4);
+        if (state.version == 0 || record != state.record) {
+            state.version++;
+            state.record = std::move(record);
+        }
+        state.position = position;
+        return state;
+    }
+
+    /// Server: the entities of every connection, less often for farther
+    /// ones, changed ones and the ones not sent for entityResend seconds
+    void send_entities(Level& level, uint32_t timeMs, double now) {
+        for (auto& [conn, known] : peerEntities) {
+            auto peer = peers.find(conn);
+            auto recipient = peer == peers.end() ? nullptr
+                                                 : level.players->get(peer->second.pid);
+            if (recipient == nullptr || known.empty()) {
                 continue;
             }
-            remote.anchored = false;
-            glm::vec3 jump = remote.anchor - sample_at(
-                remote.samples, after, config.maxExtrapolation
-            ).position;
-            if (glm::length(jump) < config.glideMin) {
-                continue;
+            glm::vec3 origin(recipient->getPosition());
+            std::string message;
+            int count = 0;
+            auto send = [&, conn = conn]() {
+                if (count == 0) {
+                    return;
+                }
+                message[5] = static_cast<char>(count & 0xFF);
+                message[6] = static_cast<char>(count >> 8);
+                if (netgame::send(conn, message, {false, true, config.lane})) {
+                    stats.messages++;
+                    stats.bytes += message.size();
+                }
+                message.clear();
+                count = 0;
+            };
+            for (auto& [uid, got] : known) {
+                const auto& state = entity_state(level, uid);
+                if (!state.exists) {
+                    continue;
+                }
+                if (got.version == state.version &&
+                    now - got.sentAt < config.entityResend) {
+                    continue;
+                }
+                float distance = glm::length(glm::vec2(
+                    state.position.x - origin.x, state.position.z - origin.z
+                ));
+                if ((serverTick + static_cast<uint32_t>(uid)) % period_for(distance) != 0) {
+                    continue;
+                }
+                if (count == 0) {
+                    put_u8(message, T_ENTITIES);
+                    put_u32(message, timeMs);
+                    put_u16(message, 0);
+                }
+                put_u32(message, static_cast<uint32_t>(uid));
+                message += state.record;
+                count++;
+                got.version = state.version;
+                got.sentAt = now;
+                stats.entityRecords++;
+                if (count == MAX_ENTITY_RECORDS) {
+                    send();
+                }
             }
-            remote.jump += jump;
-            if (glm::length(remote.jump) > config.snapDistance) {
-                remote.jump = {};
+            send();
+        }
+        if (serverTick % ENTITY_STATE_TTL == 0) {
+            for (auto it = entityStates.begin(); it != entityStates.end();) {
+                if (serverTick - it->second.tick > ENTITY_STATE_TTL) {
+                    it = entityStates.erase(it);
+                } else {
+                    ++it;
+                }
             }
         }
-        stats.snapshotsReceived++;
+    }
+
+    /// Client: the puppet where the server has the entity; static, the
+    /// velocity and the ground flag for the animations
+    void place_entity(Entity& entity, const EntityPose& pose, RemoteEntity& remote) {
+        auto& transform = entity.getTransform();
+        auto& hitbox = entity.getRigidbody().hitbox;
+        transform.setPos(decltype(transform.pos)(pose.position));
+        transform.setRot(glm::mat3_cast(pose.rotation));
+        hitbox.position = transform.pos;
+        hitbox.type = BodyType::STATIC;
+        hitbox.velocity = pose.velocity;
+        bool grounded = pose.flags & FLAG_GROUNDED;
+        hitbox.grounded = grounded;
+        bool was = remote.grounded == 1;
+        // the first placement on the ground is a landing too: a dropped
+        // item lies down
+        if (grounded && (remote.grounded < 0 || !was)) {
+            scripting::on_entity_grounded(entity, glm::length(pose.velocity));
+        } else if (!grounded && remote.grounded == 1) {
+            scripting::on_entity_fall(entity);
+        }
+        remote.grounded = grounded ? 1 : 0;
     }
 
     void server_tick(Level& level) {
@@ -687,6 +898,7 @@ namespace {
             }
             send();
         }
+        send_entities(level, timeMs, now_seconds());
     }
 
     void client_tick(Level& level) {
@@ -788,6 +1000,93 @@ Pose detail::sample_at(
     pose.velocity = velocity_to(samples, i);
     pose.yaw = lerp_angle(a.yaw, b.yaw, k);
     pose.pitch = a.pitch + (b.pitch - a.pitch) * k;
+    return pose;
+}
+
+void detail::write_entity_record(std::string& out, const EntityRecord& record) {
+    const auto& position = record.position;
+    put_u32(out, record.uid);
+    put_u32(out, static_cast<uint32_t>(static_cast<int32_t>(std::lround(position.x * 256))));
+    put_u32(out, static_cast<uint32_t>(static_cast<int32_t>(std::lround(position.y * 256))));
+    put_u32(out, static_cast<uint32_t>(static_cast<int32_t>(std::lround(position.z * 256))));
+    glm::quat q = record.rotation;
+    float length = glm::length(q);
+    q = length > 0.0f ? q / length : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    // q and -q turn alike: w >= 0 keeps equal rotations equal on the wire
+    if (q.w < 0.0f) {
+        q = -q;
+    }
+    for (float v : {q.x, q.y, q.z, q.w}) {
+        put_u16(out, static_cast<uint16_t>(static_cast<int16_t>(
+            std::clamp<long>(std::lround(v * 32767.0f), -32767, 32767)
+        )));
+    }
+    put_u8(out, record.flags);
+}
+
+bool detail::read_entity_record(
+    const std::vector<uint8_t>& data, size_t offset, EntityRecord& record
+) {
+    Reader reader {data, offset};
+    record.uid = reader.u32();
+    record.position.x = static_cast<int32_t>(reader.u32()) / 256.0f;
+    record.position.y = static_cast<int32_t>(reader.u32()) / 256.0f;
+    record.position.z = static_cast<int32_t>(reader.u32()) / 256.0f;
+    float x = static_cast<int16_t>(reader.u16()) / 32767.0f;
+    float y = static_cast<int16_t>(reader.u16()) / 32767.0f;
+    float z = static_cast<int16_t>(reader.u16()) / 32767.0f;
+    float w = static_cast<int16_t>(reader.u16()) / 32767.0f;
+    glm::quat q(w, x, y, z);
+    float length = glm::length(q);
+    record.rotation = length > 0.0f ? q / length : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    record.flags = reader.u8();
+    return reader.ok;
+}
+
+EntityPose detail::entity_sample_at(
+    const std::deque<EntitySample>& samples, double time, double maxExtrapolation
+) {
+    auto pose_of = [](const EntitySample& sample) {
+        return EntityPose {sample.position, {}, sample.rotation, sample.flags};
+    };
+    // the velocity as for players, from the positions alone
+    auto velocity_at = [&samples](size_t hi) {
+        size_t lo = hi - 1;
+        while (lo > 0 && samples[hi].time - samples[lo].time < MIN_SPAN) {
+            lo--;
+        }
+        double span = std::max(samples[hi].time - samples[lo].time, MIN_SPAN);
+        return (samples[hi].position - samples[lo].position) /
+               static_cast<float>(span);
+    };
+    if (time <= samples.front().time) {
+        return pose_of(samples.front());
+    }
+    if (time >= samples.back().time) {
+        EntityPose pose = pose_of(samples.back());
+        if (samples.size() >= 2) {
+            glm::vec3 velocity = velocity_at(samples.size() - 1);
+            double ahead = time - samples.back().time;
+            if (ahead < maxExtrapolation) {
+                pose.velocity = velocity;
+            } else {
+                ahead = maxExtrapolation;
+            }
+            pose.position += velocity * static_cast<float>(ahead);
+        }
+        return pose;
+    }
+    size_t i = 1;
+    while (samples[i].time < time) {
+        i++;
+    }
+    const auto& a = samples[i - 1];
+    const auto& b = samples[i];
+    float k = static_cast<float>((time - a.time) / (b.time - a.time));
+    EntityPose pose = pose_of(b);
+    pose.position = glm::mix(a.position, b.position, k);
+    pose.velocity = velocity_at(i);
+    pose.rotation = glm::slerp(a.rotation, b.rotation, k);
     return pose;
 }
 
@@ -949,6 +1248,25 @@ void replication::remove_remote(uint32_t serverPid) {
     remotes.erase(serverPid);
 }
 
+void replication::bind_entity(ConnectionId connection, uint64_t uid) {
+    peerEntities[connection].try_emplace(uid);
+}
+
+void replication::unbind_entity(ConnectionId connection, uint64_t uid) {
+    auto found = peerEntities.find(connection);
+    if (found != peerEntities.end()) {
+        found->second.erase(uid);
+    }
+}
+
+void replication::add_remote_entity(uint32_t serverUid, uint64_t localUid) {
+    remoteEntities[serverUid] = RemoteEntity {localUid, {}};
+}
+
+void replication::remove_remote_entity(uint32_t serverUid) {
+    remoteEntities.erase(serverUid);
+}
+
 void replication::unbind(ConnectionId connection) {
     auto found = peers.find(connection);
     if (found != peers.end()) {
@@ -960,10 +1278,12 @@ void replication::unbind(ConnectionId connection) {
             peer.sent.erase(pid);
         }
     }
+    peerEntities.erase(connection);
     if (connection == localConnection) {
         localConnection = 0;
         localPid = -1;
         remotes.clear();
+        remoteEntities.clear();
         clockSet = false;
         localAuthority = false;
         localReady = false;
@@ -978,7 +1298,10 @@ void replication::reset() {
     serverStart = -1.0;
     peers.clear();
     subjects.clear();
+    peerEntities.clear();
+    entityStates.clear();
     remotes.clear();
+    remoteEntities.clear();
     localConnection = 0;
     localPid = -1;
     clockSet = false;
@@ -1018,6 +1341,10 @@ bool replication::consume(const Event& event, Level& level) {
     bool fromServer = localConnection && event.connection == localConnection;
     if (type == T_SNAPSHOT && fromServer) {
         read_snapshot(event.data);
+        return true;
+    }
+    if (type == T_ENTITIES && fromServer) {
+        read_entities(event.data);
         return true;
     }
     if (type == T_ACK && fromServer) {
@@ -1072,6 +1399,22 @@ void replication::frame(Level& level) {
         pose.position += remote.jump;
         place_remote(level, *player, pose);
         remote.shown = true;
+    }
+    for (auto& [_, remote] : remoteEntities) {
+        auto& samples = remote.samples;
+        if (samples.empty()) {
+            continue;
+        }
+        while (samples.size() > 2 && samples[1].time < time - 1.0) {
+            samples.pop_front();
+        }
+        auto entity = level.entities->get(remote.localUid);
+        if (entity == nullptr) {
+            continue;
+        }
+        place_entity(
+            *entity, entity_sample_at(samples, time, config.maxExtrapolation), remote
+        );
     }
 }
 

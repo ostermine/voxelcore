@@ -24,7 +24,11 @@ void physics::update_sensors(
         if (!triggered) {
             continue;
         }
-        if (sensor.prevEntered.find(hitbox.entity) == sensor.prevEntered.end()) {
+        // once per step: a body moved by PhysicsSolver::stepOne (a player
+        // driven by its client's commands, netgame) comes here for every
+        // command - a dropped item was picked up as many times
+        if (sensor.prevEntered.find(hitbox.entity) == sensor.prevEntered.end() &&
+            sensor.nextEntered.find(hitbox.entity) == sensor.nextEntered.end()) {
             sensor.enterCallback(sensor.entity, sensor.index, hitbox.entity);
         }
         sensor.nextEntered.insert(hitbox.entity);
