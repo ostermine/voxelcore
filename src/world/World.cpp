@@ -266,7 +266,8 @@ void WorldInfo::deserialize(const dv::value& root) {
     } else {
         logic = dv::object({
             {"random_ticks", true},
-            {"block_ticks", true}
+            {"block_ticks", true},
+            {"generation", true}
         });
     }
     nextInventoryId = root["next-inventory-id"].asInteger(2);

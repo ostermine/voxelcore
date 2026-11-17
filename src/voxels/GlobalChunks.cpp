@@ -190,6 +190,11 @@ void GlobalChunks::save(Chunk* chunk) {
     if (chunk == nullptr) {
         return;
     }
+    // a world without generation gets its chunks from a source (a server)
+    // and keeps none of its own
+    if (!level.getWorld().getInfo().getLogicFlag("generation", true)) {
+        return;
+    }
     AABB aabb = chunk->getAABB();
     auto entities = level.entities->getAllInside(aabb);
     auto root = dv::object();

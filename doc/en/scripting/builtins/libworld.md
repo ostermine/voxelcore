@@ -6,6 +6,7 @@ Existing world logic parameters:
 | -------------- | ---- | ------- | ----------------------------- |
 | `random_ticks` | bool | `true`  | Enables random block ticking. |
 | `block_ticks`  | bool | `true`  | Enables block ticking.        |
+| `generation`   | bool | `true`  | Generates missing chunks. `false` - a world copy (a network game client): a chunk loads only when its data came (`world.set_chunk_data`) and is not saved. |
 
 ```lua
 -- Checks if world is open
@@ -71,7 +72,9 @@ world.count_chunks() -> int
 world.get_chunk_data(x: int, z: int) -> Bytearray or nil
 
 -- Modifies the chunk based on the compressed data.
--- Returns true if the chunk exists.
+-- Returns true if the chunk exists. In a world without generation
+-- (logic `generation`) the data of a chunk that is not loaded is kept
+-- until it loads, and true is returned.
 world.set_chunk_data(
     x: int, z: int,
     -- compressed chunk data

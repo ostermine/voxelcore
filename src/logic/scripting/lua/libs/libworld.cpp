@@ -198,7 +198,20 @@ static int l_set_chunk_data(lua::State* L) {
 
     auto chunk = level->chunks->getChunk(x, z);
     if (chunk == nullptr) {
-        return lua::pushboolean(L, false);
+        auto chunksController = controller->getChunksController();
+        if (chunksController->isGenerationEnabled()) {
+            return lua::pushboolean(L, false);
+        }
+        // a world without generation keeps the data until the chunk loads
+        chunksController->putChunkData(
+            x,
+            z,
+            std::vector<ubyte>(
+                reinterpret_cast<const ubyte*>(buffer.data()),
+                reinterpret_cast<const ubyte*>(buffer.data()) + buffer.size()
+            )
+        );
+        return lua::pushboolean(L, true);
     }
     compressed_chunks::decode(
         *chunk,
