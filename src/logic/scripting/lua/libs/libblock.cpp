@@ -234,6 +234,7 @@ static int l_set_states(lua::State* L) {
     int lz = z - cz * CHUNK_D;
     chunk->voxels[vox_index(lx, y, lz)].state = int2blockstate(states);
     chunk->setModifiedAndUnsaved();
+    blocks_agent::note_change(x, y, z);
     return 0;
 }
 
@@ -315,6 +316,7 @@ static int l_set_user_bits(lua::State* L) {
     int lz = z - cz * CHUNK_D;
     auto vox = &chunk->voxels[vox_index(lx, y, lz)];
     const auto& def = level.content.getIndices()->blocks.require(vox->id);
+    glm::ivec3 changed(x, y, z);
     if (def.rt.extended) {
         auto origin = blocks_agent::seek_origin(chunks, {x, y, z}, def, vox->state);
         vox = blocks_agent::get(chunks, origin.x, origin.y, origin.z);
@@ -329,9 +331,11 @@ static int l_set_user_bits(lua::State* L) {
                 return 0;
             }
         }
+        changed = origin;
     }
     vox->state.userbits = (vox->state.userbits & (~mask)) | value;
     chunk->setModifiedAndUnsaved();
+    blocks_agent::note_change(changed.x, changed.y, changed.z);
     return 0;
 }
 
@@ -362,6 +366,7 @@ static int l_set_variant(lua::State* L) {
     auto mask = def.variants->mask << offset;
     auto value = (lua::tointeger(L, 4) << offset);
 
+    glm::ivec3 changed(x, y, z);
     if (def.rt.extended) {
         auto origin = blocks_agent::seek_origin(chunks, {x, y, z}, def, vox->state);
         vox = blocks_agent::get(chunks, origin.x, origin.y, origin.z);
@@ -376,10 +381,35 @@ static int l_set_variant(lua::State* L) {
                 return 0;
             }
         }
+        changed = origin;
     }
     vox->state.userbits = (vox->state.userbits & (~mask)) | value;
     chunk->setModifiedAndUnsaved();
+    blocks_agent::note_change(changed.x, changed.y, changed.z);
     return 0;
+}
+
+/// @brief Collect the positions of changed blocks: block.pop_changes
+static int l_track_changes(lua::State* L) {
+    blocks_agent::set_changes_tracking(lua::toboolean(L, 1));
+    return 0;
+}
+
+/// @brief Positions of the blocks changed since the previous call
+/// @return {x1, y1, z1, x2, y2, z2, ...}
+static int l_pop_changes(lua::State* L) {
+    auto changes = blocks_agent::take_changes();
+    lua::createtable(L, changes.size() * 3, 0);
+    int index = 1;
+    for (const auto& pos : changes) {
+        lua::pushinteger(L, pos.x);
+        lua::rawseti(L, index++);
+        lua::pushinteger(L, pos.y);
+        lua::rawseti(L, index++);
+        lua::pushinteger(L, pos.z);
+        lua::rawseti(L, index++);
+    }
+    return 1;
 }
 
 static int l_is_replaceable_at(lua::State* L) {
@@ -859,6 +889,8 @@ const luaL_Reg blocklib[] = {
     {"set_user_bits", lua::wrap<l_set_user_bits>},
     {"get_variant", lua::wrap<l_get_variant>},
     {"set_variant", lua::wrap<l_set_variant>},
+    {"track_changes", lua::wrap<l_track_changes>},
+    {"pop_changes", lua::wrap<l_pop_changes>},
     {"is_extended", lua::wrap<l_is_extended>},
     {"get_size", lua::wrap<l_get_size>},
     {"is_segment", lua::wrap<l_is_segment>},
