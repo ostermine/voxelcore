@@ -36,6 +36,12 @@ namespace gui {
         void setVisible(bool flag) override;
 
         void setRotation(const glm::vec3& euler);
+        const glm::vec3& getRotation() const;
+
         void setCenter(const glm::vec3& center);
+        const glm::vec3& getCenter() const;
+
+        void setDistance(float distance);
+        float getDistance() const;
     };
 }
