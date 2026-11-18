@@ -22,6 +22,7 @@ class LevelController {
     std::unique_ptr<ChunksController> chunks;
 
     util::Clock playerTickClock;
+    size_t chunksTurn = 0;
 
     Player* clientPlayer;
 public:

@@ -1,6 +1,7 @@
 #include "LevelController.hpp"
 
 #include <algorithm>
+#include <vector>
 
 #include "content/Content.hpp"
 #include "debug/Logger.hpp"
@@ -63,7 +64,7 @@ LevelController::LevelController(
             player->chunks->configure(
                 std::floor(position.x), std::floor(position.z), 1
             );
-            chunks->update(16, 1, 0, *player, player.get() == clientPlayer);
+            chunks->update(16'000, 1, 0, *player, player.get() == clientPlayer);
             if (player->chunks->get(
                     std::floor(position.x), 0, std::floor(position.z)
                 )) {
@@ -77,10 +78,26 @@ void LevelController::update(float delta, bool pause) {
     level->pathfinding->performAllAsync(
         settings.pathfinding.stepsPerAsyncAgent.get()
     );
+    // the chunks loading budget is shared by all players: the client player
+    // goes first, the others take turns starting from a rotating one
+    std::vector<Player*> players;
     for (const auto& [_, player] : *level->players) {
-        if (player->isSuspended()) {
-            continue;
+        if (!player->isSuspended() && player.get() != clientPlayer) {
+            players.push_back(player.get());
         }
+    }
+    if (!players.empty()) {
+        std::rotate(
+            players.begin(),
+            players.begin() + chunksTurn++ % players.size(),
+            players.end()
+        );
+    }
+    if (clientPlayer && !clientPlayer->isSuspended()) {
+        players.insert(players.begin(), clientPlayer);
+    }
+    int64_t budget = settings.chunks.loadSpeed.get() * 1000;
+    for (auto player : players) {
         player->rotationInterpolation.updateTimer(delta);
         glm::vec3 position = player->getPosition();
         player->chunks->configure(
@@ -88,13 +105,15 @@ void LevelController::update(float delta, bool pause) {
             glm::floor(position.z),
             settings.chunks.loadDistance.get() + settings.chunks.padding.get()
         );
-        chunks->update(
-            settings.chunks.loadSpeed.get(),
-            settings.chunks.loadDistance.get(),
-            settings.chunks.padding.get(),
-            *player,
-            player.get() == clientPlayer
-        );
+        if (budget > 0) {
+            budget -= chunks->update(
+                budget,
+                settings.chunks.loadDistance.get(),
+                settings.chunks.padding.get(),
+                *player,
+                player == clientPlayer
+            );
+        }
         player->updateEntity();
     }
     if (!pause) {

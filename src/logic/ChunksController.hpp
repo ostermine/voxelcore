@@ -27,8 +27,9 @@ public:
     ChunksController(Level& level);
     ~ChunksController();
 
-    /// @param maxDuration milliseconds reserved for chunks loading
-    void update(
+    /// @param maxDuration microseconds reserved for chunks loading
+    /// @return microseconds spent
+    int64_t update(
         int64_t maxDuration,
         int loadDistance,
         uint padding,
