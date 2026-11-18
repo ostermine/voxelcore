@@ -14,6 +14,9 @@ vc = {
     get_setting = __vc_app.get_setting,
     str_setting = __vc_app.str_setting,
     get_setting_info = __vc_app.get_setting_info,
+    -- opens a folder (an entry point path, e.g. "config:pack/x") in the
+    -- system file manager; the client only
+    open_folder = not _vc_headless and __vc_app.open_folder or nil,
 }
 
 local _ffi = ffi
