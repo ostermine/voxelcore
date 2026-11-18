@@ -70,6 +70,16 @@ block.get_variant(x: int, y: int, z: int) -> int
 -- Sets the block variant by index
 block.set_variant(x: int, y: int, z: int, index: int)
 
+-- Turns on recording of changed blocks (id or states) by any path:
+-- set/place/destruct, set_states, set_rotation, set_user_bits,
+-- set_variant, block ticks. Block fields are not recorded. Off by
+-- default (e.g. a network game server sends the changes).
+block.track_changes(flag: bool)
+
+-- Returns the positions of the blocks changed since the previous call,
+-- in a row: {x1, y1, z1, x2, y2, z2, ...}; positions may repeat.
+block.pop_changes() -> table
+
 -- Checks if a block has specified tag
 block.has_tag(id: int, tag: str) -> bool
 ```
