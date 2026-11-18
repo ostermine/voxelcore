@@ -97,7 +97,12 @@ app.new_world(
 )
 
 -- Deletes a world by name.
-app.delete_world(name: str)
+-- With a game window the user confirms it in a dialog first.
+app.delete_world(
+    name: str,
+    -- delete without the dialog
+    [optional] force: bool=false
+)
 
 -- Opens a world by name.
 app.open_world(name: str)
