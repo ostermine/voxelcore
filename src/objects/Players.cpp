@@ -114,7 +114,14 @@ void Players::resume(int64_t id) {
 }
 
 void Players::remove(int64_t id) {
-    players.erase(id);
+    auto found = players.find(id);
+    if (found == players.end()) {
+        return;
+    }
+    if (auto inventory = found->second->getInventory()) {
+        level.inventories->remove(inventory->getId());
+    }
+    players.erase(found);
 }
 
 dv::value Players::serialize() const {
