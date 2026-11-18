@@ -14,6 +14,7 @@
 #include "logic/scripting/scripting.hpp"
 #include "objects/Entities.hpp"
 #include "objects/Entity.hpp"
+#include "objects/EntityDef.hpp"
 #include "objects/Player.hpp"
 #include "objects/Players.hpp"
 #include "physics/Hitbox.hpp"
@@ -271,9 +272,35 @@ namespace {
         }
     }
 
+    /// a player's commands of a tick move it less than this (blocks): the
+    /// solid bodies farther are not in its way
+    constexpr float SOLIDS_RADIUS = 8.0f;
+
+    /// Solid bodies near the entity (a mob to stand on), in its way during
+    /// the steps of its commands, as the broad phase gives them in the
+    /// common step
+    void collect_solids(Level& level, const Entity& entity, std::vector<Hitbox*>& out) {
+        out.clear();
+        const auto& own = entity.getRigidbody().hitbox;
+        for (auto other : level.entities->getAllInRadius(own.position, SOLIDS_RADIUS)) {
+            const auto& id = other->getID();
+            auto& body = other->getRigidbody();
+            if (other == &entity || id.destroyFlag || !body.enabled || !id.def.solid) {
+                continue;
+            }
+            out.push_back(&body.hitbox);
+        }
+    }
+
     /// One physics step of the body alone, as Entities::updatePhysics does
     /// it for all of them
-    void step_entity(Level& level, Entity& entity, Player& player, float dt) {
+    void step_entity(
+        Level& level,
+        Entity& entity,
+        Player& player,
+        float dt,
+        const std::vector<Hitbox*>& solids
+    ) {
         auto& rigidbody = entity.getRigidbody();
         auto& hitbox = rigidbody.hitbox;
         auto& transform = entity.getTransform();
@@ -290,7 +317,7 @@ namespace {
         auto substeps = static_cast<unsigned>(
             std::max(std::min(static_cast<int>(dt * 1000), 200), 8)
         );
-        level.physics->stepOne(hitbox, dt, substeps);
+        level.physics->stepOne(hitbox, dt, substeps, solids);
         if (!std::isfinite(hitbox.position.x) || !std::isfinite(hitbox.position.y) ||
             !std::isfinite(hitbox.position.z)) {
             hitbox.position = transform.pos;
@@ -309,11 +336,17 @@ namespace {
 
     /// Server: the command as the client made it - a physics step of its
     /// time, then core:player with its keys
-    void run_command(Level& level, Player& player, Entity& entity, const Command& cmd) {
+    void run_command(
+        Level& level,
+        Player& player,
+        Entity& entity,
+        const Command& cmd,
+        const std::vector<Hitbox*>& solids
+    ) {
         auto rotation = player.getRotation();
         player.setRotation({cmd.yaw, cmd.pitch, rotation.z});
         if (cmd.step) {
-            step_entity(level, entity, player, cmd.dt);
+            step_entity(level, entity, player, cmd.dt, solids);
         }
         drivingPid = player.getId();
         drivingKeys = -1;
@@ -345,12 +378,16 @@ namespace {
         }
         subject.budgetTime = now;
         int applied = 0;
+        static std::vector<Hitbox*> solids;
+        if (!subject.queue.empty()) {
+            collect_solids(level, *entity, solids);
+        }
         while (!subject.queue.empty() &&
                subject.queue.front().dt <= subject.budget + 1e-6) {
             Command cmd = subject.queue.front();
             subject.queue.pop_front();
             subject.budget -= cmd.dt;
-            run_command(level, *player, *entity, cmd);
+            run_command(level, *player, *entity, cmd, solids);
             subject.lastCommand = cmd.seq;
             applied++;
         }
@@ -619,16 +656,11 @@ namespace {
             if (found == remoteEntities.end()) {
                 continue;
             }
-            auto& samples = found->second.samples;
-            if (!samples.empty() && serverTime <= samples.back().time) {
-                continue;
-            }
-            samples.push_back(EntitySample {
-                serverTime, record.position, record.rotation, record.flags
-            });
-            if (samples.size() > MAX_SAMPLES) {
-                samples.pop_front();
-            }
+            push_entity_sample(
+                found->second.samples,
+                EntitySample {serverTime, record.position, record.rotation, record.flags},
+                MAX_SAMPLES
+            );
         }
         glide_remotes(now);
         stats.entitySnapshotsReceived++;
@@ -783,6 +815,12 @@ namespace {
         transform.setPos(decltype(transform.pos)(pose.position));
         transform.setRot(glm::mat3_cast(pose.rotation));
         hitbox.position = transform.pos;
+        // a body standing on a solid one takes its move in the substep as the
+        // ground's speed (collisions.cpp); the puppet does not move within
+        // the step - a stale previous position threw a player standing on a
+        // moved pig away at 750 m/s
+        hitbox.prevPosition = hitbox.position;
+        hitbox.substepTime = 0.0f;
         hitbox.type = BodyType::STATIC;
         hitbox.velocity = pose.velocity;
         bool grounded = pose.flags & FLAG_GROUNDED;
@@ -1043,6 +1081,23 @@ bool detail::read_entity_record(
     return reader.ok;
 }
 
+void detail::push_entity_sample(
+    std::deque<EntitySample>& samples, const EntitySample& sample, size_t maxSamples
+) {
+    if (!samples.empty() && sample.time <= samples.back().time) {
+        return;
+    }
+    if (!samples.empty() && sample.time - samples.back().time > ENTITY_GAP) {
+        EntitySample still = samples.back();
+        still.time = sample.time - ENTITY_STEP;
+        samples.push_back(still);
+    }
+    samples.push_back(sample);
+    while (samples.size() > maxSamples) {
+        samples.pop_front();
+    }
+}
+
 EntityPose detail::entity_sample_at(
     const std::deque<EntitySample>& samples, double time, double maxExtrapolation
 ) {
@@ -1056,8 +1111,9 @@ EntityPose detail::entity_sample_at(
             lo--;
         }
         double span = std::max(samples[hi].time - samples[lo].time, MIN_SPAN);
-        return (samples[hi].position - samples[lo].position) /
-               static_cast<float>(span);
+        glm::vec3 velocity = (samples[hi].position - samples[lo].position) /
+                             static_cast<float>(span);
+        return glm::length(velocity) > MAX_ENTITY_SPEED ? glm::vec3(0.0f) : velocity;
     };
     if (time <= samples.front().time) {
         return pose_of(samples.front());

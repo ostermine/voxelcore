@@ -22,8 +22,13 @@ public:
 
     /// Step one body out of the common step (netgame: a player moved by the
     /// commands of its client, each with its own time). Collides with
-    /// blocks only, not with solid entities
-    void stepOne(Hitbox& hitbox, float delta, uint substeps);
+    /// blocks and with the given solid bodies (those near it)
+    void stepOne(
+        Hitbox& hitbox,
+        float delta,
+        uint substeps,
+        const std::vector<Hitbox*>& solids = {}
+    );
 
     auto& getSensorsWriteable() {
         return sensors;

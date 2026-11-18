@@ -336,6 +336,12 @@ void Entities::preparePhysics(float delta) {
                             : std::numeric_limits<float>::infinity();
         rigidbody.hitbox.elasticity = rigidbody.elasticity;
         if (bodyType == BodyType::STATIC) {
+            // out of the step, but a solid one stays in the way of the
+            // others: a puppet of a server's mob (netgame) is placed from
+            // the snapshots and must be stood on like the mob itself
+            if (eid.def.solid) {
+                solidHitboxes.emplace_back(&rigidbody.hitbox);
+            }
             continue;
         }
         hitboxes.emplace_back(&rigidbody.hitbox);

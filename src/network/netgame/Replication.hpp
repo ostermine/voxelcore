@@ -269,8 +269,28 @@ namespace netgame::replication::detail {
         uint8_t flags;
     };
 
+    /// a move between snapshots faster than this (blocks per second) is a
+    /// teleport: the puppet gets no velocity from it - a player standing on
+    /// it took that speed of the ground and was thrown away
+    constexpr float MAX_ENTITY_SPEED = 25.0f;
+
+    /// an entity that does not change is not sent: a snapshot this long
+    /// (seconds) after the previous one follows a stillness...
+    constexpr double ENTITY_GAP = 0.35;
+    /// ... that lasted until a server tick before it
+    constexpr double ENTITY_STEP = 0.05;
+
+    /// Add a snapshot of an entity: older ones than the last are dropped;
+    /// after a gap the entity stood still until ENTITY_STEP before it (a pig
+    /// starting to walk, a script moving it), not moved all the gap long;
+    /// at most maxSamples kept
+    void push_entity_sample(
+        std::deque<EntitySample>& samples, const EntitySample& sample, size_t maxSamples
+    );
+
     /// As sample_at: interpolated between two samples, extrapolated past
-    /// the last one at most maxExtrapolation seconds (the rotation stays).
+    /// the last one at most maxExtrapolation seconds (the rotation stays);
+    /// a teleport (MAX_ENTITY_SPEED) is neither extrapolated nor a velocity.
     /// samples are not empty and go in time order
     EntityPose entity_sample_at(
         const std::deque<EntitySample>& samples, double time, double maxExtrapolation

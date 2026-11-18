@@ -254,4 +254,37 @@ TEST(netgame_replication, entity_sample_interpolates_and_extrapolates) {
     EXPECT_EQ(before.position, glm::vec3(0.0f));
 }
 
+TEST(netgame_replication, entity_teleport_has_no_velocity) {
+    // 3 blocks in 50 ms: moved by a script, not walking
+    glm::quat q(1, 0, 0, 0);
+    std::deque<EntitySample> samples {
+        EntitySample {1.0, {0, 0, 0}, q, 0},
+        EntitySample {1.05, {3, 0, 0}, q, 0},
+    };
+    EntityPose mid = entity_sample_at(samples, 1.025, 0.25);
+    EXPECT_EQ(mid.velocity, glm::vec3(0.0f));
+    EntityPose ahead = entity_sample_at(samples, 1.15, 0.25);
+    EXPECT_NEAR(ahead.position.x, 3.0f, 1e-4f);
+    EXPECT_EQ(ahead.velocity, glm::vec3(0.0f));
+}
+
+TEST(netgame_replication, entity_still_until_a_tick_before_a_late_snapshot) {
+    // unchanged for 0.8 s (not sent), then 0.1 block in a tick: it started
+    // walking, 2 m/s - not 0.125 m/s all the gap long
+    glm::quat q(1, 0, 0, 0);
+    std::deque<EntitySample> samples;
+    push_entity_sample(samples, EntitySample {1.0, {0, 0, 0}, q, 0}, 32);
+    push_entity_sample(samples, EntitySample {1.8, {0.1f, 0, 0}, q, 0}, 32);
+    ASSERT_EQ(samples.size(), 3u);
+    EXPECT_NEAR(samples[1].time, 1.75, 1e-9);
+    EXPECT_EQ(samples[1].position, glm::vec3(0.0f));
+    EntityPose before = entity_sample_at(samples, 1.7, 0.25);
+    EXPECT_EQ(before.position, glm::vec3(0.0f));
+    EntityPose walking = entity_sample_at(samples, 1.8, 0.25);
+    EXPECT_NEAR(walking.velocity.x, 2.0f, 1e-3f);
+    // an old snapshot after a newer one is dropped
+    push_entity_sample(samples, EntitySample {1.5, {5, 0, 0}, q, 0}, 32);
+    EXPECT_EQ(samples.size(), 3u);
+}
+
 #endif

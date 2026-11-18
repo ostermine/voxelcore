@@ -93,15 +93,18 @@ void PhysicsSolver::step(
     }
 }
 
-void PhysicsSolver::stepOne(Hitbox& hitbox, float delta, uint substeps) {
-    static const std::vector<Hitbox*> noSolids;
-
+void PhysicsSolver::stepOne(
+    Hitbox& hitbox,
+    float delta,
+    uint substeps,
+    const std::vector<Hitbox*>& solids
+) {
     hitbox.groundMaterial.clear();
     hitbox.prevGrounded = hitbox.grounded;
     hitbox.grounded = false;
     hitbox.prevVelocity = hitbox.velocity;
 
-    // the same as a body of step() without solid entities around
+    // the same as a body of step(), the solids are the caller's
     float dt = delta / static_cast<float>(substeps);
     physics::schedule_substep(hitbox, gravity, 0, substeps, dt);
     for (uint i = 0; i < substeps; i++) {
@@ -119,7 +122,7 @@ void PhysicsSolver::stepOne(Hitbox& hitbox, float delta, uint substeps) {
                 hitbox.doneSubsteps += skip;
             }
             physics::calc_substep(
-                hitbox, {chunks, noSolids, gravity, dt, i + 1}
+                hitbox, {chunks, solids, gravity, dt, i + 1}
             );
             hitbox.doneSubsteps++;
         }
