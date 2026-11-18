@@ -25,7 +25,8 @@ struct WorldInfo : public Serializable {
     static const dv::value& defaultLogic() {
         static const dv::value logic = dv::object({
             {"random_ticks", true},
-            {"block_ticks", true}
+            {"block_ticks", true},
+            {"generation", true}
         });
         return logic;
     }
