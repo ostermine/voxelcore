@@ -15,5 +15,16 @@
       "curl",
       "freetype",
       "openssl"
-    ]
+    ],
+    "features": {
+      "netgame": {
+        "description": "Game transport (GameNetworkingSockets), Lua library netgame",
+        "dependencies": [
+          {
+            "name": "gamenetworkingsockets",
+            "default-features": false
+          }
+        ]
+      }
+    }
 }

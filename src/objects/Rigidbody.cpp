@@ -44,7 +44,10 @@ void Rigidbody::deserialize(const dv::value& root) {
 template <void (*callback)(const Entity&, size_t, entityid_t)>
 static sensorcallback create_sensor_callback(Entities& entities) {
     return [&entities](auto entityid, auto index, auto otherid) {
-        if (auto entity = entities.get(entityid)) {
+        auto entity = entities.get(entityid);
+        // a despawned entity stays until the end of the frame: a dropped
+        // item picked up by one player was picked up by the next one too
+        if (entity && !entity->getID().destroyFlag) {
             callback(*entity, index, otherid);
         }
     };

@@ -94,6 +94,9 @@ static void create_libs(State* L, StateType stateType) {
         openlib(L, "input", inputlib);
         openlib(L, "inventory", inventorylib);
         openlib(L, "network", networklib);
+#ifdef VOXELENGINE_NETGAME
+        openlib(L, "netgame", netgamelib);
+#endif
         openlib(L, "pathfinding", pathfindinglib);
         openlib(L, "player", playerlib);
         openlib(L, "time", timelib);
